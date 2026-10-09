@@ -23,6 +23,16 @@ export interface RouteGeometry {
   coordinates: [number, number][]; // Leaflet format: [lat, lng]
 }
 
+export interface RouteStep {
+  instruction: string;
+  name: string;
+  distanceMetres: number;
+  durationSeconds: number;
+  type: string;
+  modifier?: string;
+  location: [number, number]; // Leaflet format: [lat, lng]
+}
+
 export interface RouteOption {
   id: string;
   index: number;
@@ -34,6 +44,7 @@ export interface RouteOption {
   coordinates: [number, number][]; // Leaflet format: [lat, lng]
   weightName?: string;
   isPrimary: boolean;
+  steps?: RouteStep[];
 }
 
 export interface RoutingResult {
@@ -188,8 +199,8 @@ export async function fetchRoadRoute(
     };
   }
 
-  // OSRM format: /driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson&alternatives=true
-  const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng.toFixed(5)},${origin.lat.toFixed(5)};${destination.lng.toFixed(5)},${destination.lat.toFixed(5)}?overview=full&geometries=geojson&alternatives=true`;
+  // OSRM format: /driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson&alternatives=true&steps=true
+  const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng.toFixed(5)},${origin.lat.toFixed(5)};${destination.lng.toFixed(5)},${destination.lat.toFixed(5)}?overview=full&geometries=geojson&alternatives=true&steps=true`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
@@ -224,6 +235,39 @@ export async function fetchRoadRoute(
       const distanceKm = (r.distance / 1000).toFixed(1);
       const durationMinutes = Math.round(r.duration / 60).toString();
 
+      // Parse turn maneuvers and route steps
+      const steps: RouteStep[] = (r.legs?.[0]?.steps || []).map((s: any) => {
+        const maneuver = s.maneuver || {};
+        const stepLocation: [number, number] = maneuver.location
+          ? [maneuver.location[1], maneuver.location[0]]
+          : [0, 0];
+
+        let instruction = s.name ? `Proceed onto ${s.name}` : 'Continue on road';
+        if (maneuver.type === 'depart') {
+          instruction = s.name ? `Depart on ${s.name}` : 'Depart towards destination';
+        } else if (maneuver.type === 'arrive') {
+          instruction = 'Arrive at destination healthcare facility';
+        } else if (maneuver.type === 'turn') {
+          instruction = `Turn ${maneuver.modifier || ''} ${s.name ? `onto ${s.name}` : ''}`.trim();
+        } else if (maneuver.type === 'roundabout') {
+          instruction = `Enter roundabout and take exit ${s.name ? `onto ${s.name}` : ''}`.trim();
+        } else if (maneuver.type === 'fork') {
+          instruction = `Keep ${maneuver.modifier || ''} at the fork ${s.name ? `onto ${s.name}` : ''}`.trim();
+        } else if (maneuver.modifier) {
+          instruction = `${maneuver.modifier} ${s.name ? `onto ${s.name}` : ''}`.trim();
+        }
+
+        return {
+          instruction,
+          name: s.name || '',
+          distanceMetres: Math.round(s.distance || 0),
+          durationSeconds: Math.round(s.duration || 0),
+          type: maneuver.type || 'turn',
+          modifier: maneuver.modifier,
+          location: stepLocation,
+        };
+      });
+
       return {
         id: `route-${idx}`,
         index: idx,
@@ -235,6 +279,7 @@ export async function fetchRoadRoute(
         coordinates: leafletCoords,
         weightName: r.weight_name,
         isPrimary: idx === 0,
+        steps,
       };
     });
 
@@ -248,7 +293,7 @@ export async function fetchRoadRoute(
       selectedRouteIndex: 0,
       fetchedAt: Date.now(),
       provider: 'OSRM (OpenStreetMap Roads)',
-      disclaimer: 'Route distance and estimated duration derived from OpenStreetMap road network. Excludes real-time traffic jams and emergency exemptions.',
+      disclaimer: 'Actual road routing geometry via OpenStreetMap / OSRM. Driving duration is estimated using standard highway speed limits; does not reflect real-time live traffic congestion or signal delays.',
     };
 
     // Cache the result

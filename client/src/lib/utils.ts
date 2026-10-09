@@ -43,3 +43,24 @@ export function getBearing(
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   return dirs[Math.round(bearing / 45) % 8];
 }
+
+/**
+ * Calculate accurate surface distance between two coordinates in metres
+ */
+export function haversineDistance(
+  coord1: { lat: number; lng: number },
+  coord2: { lat: number; lng: number },
+): number {
+  const R = 6371000; // Earth radius in metres
+  const dLat = ((coord2.lat - coord1.lat) * Math.PI) / 180;
+  const dLng = ((coord2.lng - coord1.lng) * Math.PI) / 180;
+  const lat1 = (coord1.lat * Math.PI) / 180;
+  const lat2 = (coord2.lat * Math.PI) / 180;
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}

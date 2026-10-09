@@ -87,6 +87,28 @@ const emergencyIcon = createIcon('#F0B85A', true, '🚑');
 const driverNearIcon = createIcon('#5DE4D0', false, '🚗');
 const driverFarIcon = createIcon('#9AB9B5', false);
 
+const demoVehicleIcon = L.divIcon({
+  className: 'demo-vehicle-marker',
+  html: `
+    <div style="position:relative;display:flex;align-items:center;justify-content:center;">
+      <div style="position:absolute;width:44px;height:44px;border-radius:50%;background:#5DE4D044;animation:pulse-ring 1.5s ease-out infinite;"></div>
+      <div style="
+        width:34px;height:34px;border-radius:50%;
+        background:#0B272D;
+        border:3px solid #5DE4D0;
+        box-shadow:0 0 15px #5DE4D0;
+        display:flex;align-items:center;justify-content:center;
+        font-size:16px;
+      ">
+        🚗
+      </div>
+    </div>
+  `,
+  iconSize: [44, 44],
+  iconAnchor: [22, 22],
+  popupAnchor: [0, -22],
+});
+
 // Fit map bounds to route or re-center
 function MapBoundsUpdater({
   routeCoordinates,
@@ -118,6 +140,12 @@ export interface HospitalMarkerInfo {
   town: string;
   coords: Coordinates;
   isDestination?: boolean;
+  alternateName?: string;
+  category?: string;
+  address?: string;
+  verifiedOSM?: boolean;
+  onSelectDestination?: (coords: Coordinates) => void;
+  onGetDirections?: (coords: Coordinates) => void;
 }
 
 interface EmergencyMapProps {
@@ -129,6 +157,8 @@ interface EmergencyMapProps {
   onSelectRouteIndex?: (index: number) => void;
   hospitalMarkers?: HospitalMarkerInfo[];
   showRouteControls?: boolean;
+  demoVehicleCoord?: Coordinates | null;
+  isDemoJourneyActive?: boolean;
 }
 
 export function EmergencyMap({
@@ -140,6 +170,8 @@ export function EmergencyMap({
   onSelectRouteIndex,
   hospitalMarkers = [],
   showRouteControls = true,
+  demoVehicleCoord = null,
+  isDemoJourneyActive = false,
 }: EmergencyMapProps) {
   const defaultCenter: Coordinates = center || emergency?.origin || KERALA_CENTER;
 
@@ -300,28 +332,89 @@ export function EmergencyMap({
             icon={createHospitalIcon(hospital.isDestination)}
           >
             <Popup>
-              <div className="text-sm min-w-[160px]">
+              <div className="text-sm min-w-[190px]">
                 <div className="flex items-center gap-1.5 text-accent-teal font-semibold text-xs uppercase tracking-wider">
-                  <span>🏥 Hospital Facility</span>
+                  <span>🏥 Healthcare Facility</span>
                   {hospital.isDestination && (
                     <span className="bg-accent-teal/20 text-accent-teal px-1.5 py-0.5 rounded text-[10px] font-bold">
-                      Destination
+                      Active Destination
                     </span>
                   )}
                 </div>
                 <div className="font-bold text-primary-text mt-1 text-sm">
                   {hospital.name}
                 </div>
+                {hospital.alternateName && (
+                  <div className="text-muted-text text-xs italic mt-0.5">
+                    {hospital.alternateName}
+                  </div>
+                )}
                 <div className="text-muted-text text-xs mt-0.5">
                   Location: {hospital.town}, Kerala
                 </div>
-                <div className="text-muted-text/70 text-[11px] font-mono mt-1">
+                {hospital.address && (
+                  <div className="text-muted-text/80 text-[11px] mt-0.5">
+                    {hospital.address}
+                  </div>
+                )}
+                <div className="text-muted-text/70 text-[10px] font-mono mt-1">
                   {hospital.coords.lat.toFixed(4)}°N, {hospital.coords.lng.toFixed(4)}°E
+                  {hospital.verifiedOSM && ' • OSM Verified'}
                 </div>
+
+                {/* Quick Actions */}
+                {(hospital.onSelectDestination || hospital.onGetDirections) && (
+                  <div className="flex items-center gap-2 mt-2 pt-2 border-t border-petrol/60">
+                    {hospital.onGetDirections && (
+                      <button
+                        type="button"
+                        onClick={() => hospital.onGetDirections?.(hospital.coords)}
+                        className="px-2.5 py-1 bg-petrol text-accent-teal rounded text-xs font-semibold hover:bg-petrol/80 transition-colors"
+                      >
+                        Directions
+                      </button>
+                    )}
+                    {hospital.onSelectDestination && !hospital.isDestination && (
+                      <button
+                        type="button"
+                        onClick={() => hospital.onSelectDestination?.(hospital.coords)}
+                        className="px-2.5 py-1 bg-accent-teal text-midnight rounded text-xs font-semibold hover:bg-accent-teal/90 transition-colors"
+                      >
+                        Set Destination
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </Popup>
           </Marker>
         ))}
+
+        {/* Demo Journey Simulated Vehicle Marker */}
+        {demoVehicleCoord && (
+          <Marker
+            position={[demoVehicleCoord.lat, demoVehicleCoord.lng]}
+            icon={demoVehicleIcon}
+            zIndexOffset={1000}
+          >
+            <Popup>
+              <div className="text-sm min-w-[160px]">
+                <div className="flex items-center gap-1.5 text-accent-teal font-bold text-xs">
+                  <span>🚗 DEMO SIMULATION VEHICLE</span>
+                </div>
+                <div className="text-primary-text text-xs font-medium mt-1">
+                  Safe Journey Presentation Mode
+                </div>
+                <div className="text-[11px] text-muted-text mt-0.5">
+                  Local client animation along verified OpenStreetMap road geometry.
+                </div>
+                <div className="text-[10px] text-muted-text/70 font-mono mt-1">
+                  {demoVehicleCoord.lat.toFixed(5)}°N, {demoVehicleCoord.lng.toFixed(5)}°E
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
 
         {/* Vehicle Markers */}
         {vehicles
