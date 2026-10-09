@@ -103,6 +103,13 @@ export function LoginPage({ onDriverLogin }: LoginPageProps) {
     setErrorMessage(null);
   };
 
+  const fillDemoAdmin = () => {
+    setActiveRole('admin');
+    setAdminName('Chief Dispatcher Mod-1');
+    setAdminKey('test-moderator-key-audit-suite');
+    setErrorMessage(null);
+  };
+
   return (
     <div className="min-h-[calc(100vh-4rem)] pt-20 pb-12 px-4 sm:px-6 flex items-center justify-center">
       <div className="w-full max-w-md space-y-6">
@@ -311,14 +318,24 @@ export function LoginPage({ onDriverLogin }: LoginPageProps) {
 
           {/* Quick Demo Pre-fill */}
           <div className="pt-4 mt-4 border-t border-petrol/40 flex items-center justify-between text-xs">
-            <span className="text-muted-text">Testing shortcut:</span>
-            <button
-              type="button"
-              onClick={fillDemoDriver}
-              className="text-accent-teal hover:underline font-medium"
-            >
-              Fill Demo Driver
-            </button>
+            <span className="text-muted-text">Demo Shortcuts:</span>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={fillDemoDriver}
+                className="text-accent-teal hover:underline font-medium"
+              >
+                Fill Driver
+              </button>
+              <span className="text-petrol">•</span>
+              <button
+                type="button"
+                onClick={fillDemoAdmin}
+                className="text-accent-teal hover:underline font-medium"
+              >
+                Fill Admin
+              </button>
+            </div>
           </div>
         </Card>
       </div>
