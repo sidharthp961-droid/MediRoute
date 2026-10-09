@@ -173,6 +173,8 @@ export const KERALA_HOSPITALS: HospitalDestination[] = [
   },
 ];
 
+import { haversineDistance } from './utils';
+
 /**
  * Filter hospitals by search term matching name, town, district, or category.
  */
@@ -187,4 +189,29 @@ export function searchHospitals(query: string): HospitalDestination[] {
       h.category.toLowerCase().includes(clean) ||
       (h.alternateName && h.alternateName.toLowerCase().includes(clean)),
   );
+}
+
+/**
+ * Finds the closest verified hospital to the given coordinates.
+ */
+export function findNearestHospital(
+  origin: Coordinates,
+  excludeId?: string,
+): { hospital: HospitalDestination; distanceMetres: number } | null {
+  if (!KERALA_HOSPITALS.length) return null;
+
+  let nearest: HospitalDestination | null = null;
+  let minDistance = Infinity;
+
+  for (const h of KERALA_HOSPITALS) {
+    if (excludeId && h.id === excludeId) continue;
+    const d = haversineDistance(origin, h.coords);
+    if (d < minDistance) {
+      minDistance = d;
+      nearest = h;
+    }
+  }
+
+  if (!nearest) return null;
+  return { hospital: nearest, distanceMetres: minDistance };
 }

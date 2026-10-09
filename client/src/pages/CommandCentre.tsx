@@ -1,4 +1,4 @@
-// ─── Emergency Command Centre — Kerala Priority Corridors & Safe Journey Demo ───
+// ─── Emergency Command Centre — Kerala Priority Corridors & Google Maps Navigation Mode ───
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Radio,
@@ -25,11 +25,15 @@ import {
   List,
   Shield,
   Info,
+  X,
+  CornerUpRight,
+  LocateFixed,
 } from 'lucide-react';
 import { Button, Card, Badge } from '@/components/ui';
 import { EmergencyMap, HospitalMarkerInfo } from '@/components/EmergencyMap';
 import { Timeline } from '@/components/Timeline';
 import { HospitalDirectory } from '@/components/HospitalDirectory';
+import { NavigationMode } from '@/components/NavigationMode';
 import { DEMO_COORDS } from '@/types';
 import type {
   Vehicle,
@@ -43,7 +47,11 @@ import {
   RoutingResult,
   KeralaCorridor,
 } from '@/lib/routing';
-import { KERALA_HOSPITALS, HospitalDestination } from '@/lib/hospitals';
+import {
+  KERALA_HOSPITALS,
+  HospitalDestination,
+  findNearestHospital,
+} from '@/lib/hospitals';
 import { useJourneySimulation } from '@/hooks/useJourneySimulation';
 
 interface CommandCentreProps {
@@ -68,6 +76,11 @@ export function CommandCentre({
   // Navigation tabs: 'corridors' | 'hospitals' | 'simulation'
   const [activeTab, setActiveTab] = useState<'corridors' | 'hospitals' | 'simulation'>('corridors');
 
+  // Dedicated Google Maps Navigation Mode state
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [navMode, setNavMode] = useState<'demo' | 'live'>('demo');
+  const [showDestinationModal, setShowDestinationModal] = useState(false);
+
   // Priority corridor selection (default: Thodupuzha → Ernakulam)
   const [selectedCorridorId, setSelectedCorridorId] = useState<string>('thodupuzha-ernakulam');
   const [selectedHospital, setSelectedHospital] = useState<HospitalDestination | null>(null);
@@ -86,12 +99,26 @@ export function CommandCentre({
     return 'Hospital Destination';
   }, [selectedHospital, selectedCorridor]);
 
+  const activeDestinationTown = useMemo(() => {
+    if (selectedHospital) return selectedHospital.town;
+    if (selectedCorridor) return selectedCorridor.destination.town;
+    return undefined;
+  }, [selectedHospital, selectedCorridor]);
+
   const currentActiveRoute = routeResult?.routes[routeResult.selectedRouteIndex || 0] || null;
 
   // Safe Journey Simulation Engine (Local Presentation Only — No Socket Emissions)
   const sim = useJourneySimulation(currentActiveRoute, activeDestinationName);
 
-  // Load road route between specified points
+  // Live Emergency Vehicle telemetry
+  const liveEmergencyVehicle = useMemo(() => {
+    if (!emergency) return null;
+    return vehicles.find((v) => v.id === emergency.vehicleId) || null;
+  }, [emergency, vehicles]);
+
+  const liveVehicleCoord = liveEmergencyVehicle?.location || emergency?.origin || null;
+
+  // Load road route between specified points via OSRM
   const loadRoute = useCallback(
     async (
       origin: Coordinates,
@@ -112,7 +139,7 @@ export function CommandCentre({
       } catch (err: any) {
         console.error('[Routing] Error fetching road route:', err);
         setRouteError(
-          err.message || 'Unable to connect to OSRM routing service. Please retry.',
+          err.message || 'Unable to connect to OSRM routing service. Please select another facility or retry.',
         );
         setRouteResult(null);
       } finally {
@@ -122,9 +149,45 @@ export function CommandCentre({
     [],
   );
 
-  // Initial load for default corridor
+  // 1. AUTOMATIC NEAREST HOSPITAL RESOLUTION ON EMERGENCY ACTIVATION
   useEffect(() => {
-    if (selectedCorridor && !selectedHospital) {
+    if (emergency?.status === 'active' && emergency.origin) {
+      // If destination already explicitly chosen, use it
+      if (emergency.destination) {
+        const matched = KERALA_HOSPITALS.find(
+          (h) =>
+            Math.abs(h.coords.lat - emergency.destination!.lat) < 0.001 &&
+            Math.abs(h.coords.lng - emergency.destination!.lng) < 0.001,
+        );
+        if (matched) {
+          setSelectedHospital(matched);
+          loadRoute(emergency.origin, matched.coords, {
+            originLabel: 'Incident Location',
+            destinationLabel: matched.name,
+          });
+          return;
+        }
+      }
+
+      // Automatically find the closest hospital from verified dataset
+      const nearest = findNearestHospital(emergency.origin);
+      if (nearest) {
+        setSelectedHospital(nearest.hospital);
+        loadRoute(emergency.origin, nearest.hospital.coords, {
+          originLabel: 'Incident Location',
+          destinationLabel: nearest.hospital.name,
+        });
+      } else {
+        setRouteError(
+          'No verified hospital facility could be located near incident coordinates. Please manually select a destination from the directory.',
+        );
+      }
+    }
+  }, [emergency?.status, emergency?.origin?.lat, emergency?.origin?.lng, loadRoute]);
+
+  // Initial load for default corridor if not already loaded
+  useEffect(() => {
+    if (selectedCorridor && !selectedHospital && !emergency) {
       loadRoute(
         selectedCorridor.origin.coords,
         selectedCorridor.destination.coords,
@@ -135,7 +198,7 @@ export function CommandCentre({
         },
       );
     }
-  }, [selectedCorridor, selectedHospital, loadRoute]);
+  }, [selectedCorridor, selectedHospital, emergency, loadRoute]);
 
   // Handle hospital selection from Directory
   const handleSelectHospital = (hospital: HospitalDestination) => {
@@ -144,8 +207,9 @@ export function CommandCentre({
 
   const handleGetHospitalDirections = (hospital: HospitalDestination) => {
     setSelectedHospital(hospital);
-    loadRoute(DEMO_COORDS.emergency, hospital.coords, {
-      originLabel: 'Thodupuzha Hub',
+    const originCoords = emergency?.origin || DEMO_COORDS.emergency;
+    loadRoute(originCoords, hospital.coords, {
+      originLabel: emergency ? 'Incident Location' : 'Thodupuzha Hub',
       destinationLabel: hospital.name,
     }, true);
   };
@@ -153,13 +217,28 @@ export function CommandCentre({
   const handleStartDemoJourney = (hospital: HospitalDestination) => {
     setSelectedHospital(hospital);
     setActiveTab('simulation');
-    loadRoute(DEMO_COORDS.emergency, hospital.coords, {
-      originLabel: 'Thodupuzha Hub',
+    const originCoords = emergency?.origin || DEMO_COORDS.emergency;
+    loadRoute(originCoords, hospital.coords, {
+      originLabel: emergency ? 'Incident Location' : 'Thodupuzha Hub',
       destinationLabel: hospital.name,
     }, true).then(() => {
-      // Auto-trigger simulation once route is ready
       setTimeout(() => sim.startSimulation(), 400);
     });
+  };
+
+  // 2. START NAVIGATION HANDLER
+  const handleStartNavigation = () => {
+    if (!currentActiveRoute) return;
+    setIsNavigating(true);
+
+    if (navMode === 'demo') {
+      sim.startSimulation();
+    }
+  };
+
+  const handleEndNavigation = () => {
+    setIsNavigating(false);
+    sim.stopSimulation();
   };
 
   const handleCorridorSelect = (corridorId: string) => {
@@ -248,6 +327,9 @@ export function CommandCentre({
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
 
+  // Active navigation coordinate to feed the map follower
+  const navVehicleCoord = navMode === 'demo' ? sim.currentCoord : liveVehicleCoord;
+
   return (
     <div className="min-h-screen pt-20 pb-6 px-4 sm:px-6">
       <div className="max-w-7xl mx-auto space-y-5">
@@ -266,11 +348,16 @@ export function CommandCentre({
               Emergency Command Centre
             </h1>
             <p className="text-muted-text text-sm">
-              Hospital directory, actual road routing, and safe journey simulation
+              Nearest hospital auto-routing, actual road geometry, and Google Maps-style navigation
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {sim.isActive ? (
+            {isNavigating ? (
+              <Badge variant="teal" pulse>
+                <Navigation className="w-3 h-3" />
+                Navigation Mode Active
+              </Badge>
+            ) : sim.isActive ? (
               <Badge variant="teal" pulse>
                 <Play className="w-3 h-3" />
                 Demo Journey Active
@@ -289,59 +376,61 @@ export function CommandCentre({
           </div>
         </div>
 
-        {/* Top Control Mode Switcher Tabs */}
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-deep-surface border border-petrol/60 rounded-2xl p-2.5 shadow-lg">
-          <div className="flex items-center gap-1.5 overflow-x-auto">
-            <button
-              type="button"
-              onClick={() => setActiveTab('corridors')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
-                activeTab === 'corridors'
-                  ? 'bg-petrol text-accent-teal shadow-md shadow-accent-teal/10'
-                  : 'text-muted-text hover:text-primary-text'
-              }`}
-            >
-              <Compass className="w-4 h-4" />
-              Priority Corridors (6)
-            </button>
+        {/* Top Mode Switcher Tabs (Hidden during active full navigation for clutter-free HUD) */}
+        {!isNavigating && (
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-deep-surface border border-petrol/60 rounded-2xl p-2.5 shadow-lg">
+            <div className="flex items-center gap-1.5 overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => setActiveTab('corridors')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
+                  activeTab === 'corridors'
+                    ? 'bg-petrol text-accent-teal shadow-md shadow-accent-teal/10'
+                    : 'text-muted-text hover:text-primary-text'
+                }`}
+              >
+                <Compass className="w-4 h-4" />
+                Priority Corridors (6)
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab('hospitals')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
-                activeTab === 'hospitals'
-                  ? 'bg-petrol text-accent-teal shadow-md shadow-accent-teal/10'
-                  : 'text-muted-text hover:text-primary-text'
-              }`}
-            >
-              <Building2 className="w-4 h-4" />
-              Hospital Directory (13)
-            </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('hospitals')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
+                  activeTab === 'hospitals'
+                    ? 'bg-petrol text-accent-teal shadow-md shadow-accent-teal/10'
+                    : 'text-muted-text hover:text-primary-text'
+                }`}
+              >
+                <Building2 className="w-4 h-4" />
+                Hospital Directory (13)
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab('simulation')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
-                activeTab === 'simulation'
-                  ? 'bg-accent-teal text-midnight shadow-md shadow-accent-teal/20 font-bold'
-                  : 'text-muted-text hover:text-primary-text'
-              }`}
-            >
-              <Play className="w-4 h-4" />
-              Demo Journey Mode
-            </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('simulation')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
+                  activeTab === 'simulation'
+                    ? 'bg-accent-teal text-midnight shadow-md shadow-accent-teal/20 font-bold'
+                    : 'text-muted-text hover:text-primary-text'
+                }`}
+              >
+                <Play className="w-4 h-4" />
+                Demo Journey Mode
+              </button>
+            </div>
+
+            {isLoadingRoute && (
+              <span className="text-xs text-accent-teal flex items-center gap-1.5 animate-pulse px-2">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                Calculating OSRM Road Route...
+              </span>
+            )}
           </div>
-
-          {isLoadingRoute && (
-            <span className="text-xs text-accent-teal flex items-center gap-1.5 animate-pulse px-2">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              Calculating OSRM Road Route...
-            </span>
-          )}
-        </div>
+        )}
 
         {/* Tab 1: Priority Corridors Selector Pills */}
-        {activeTab === 'corridors' && (
+        {!isNavigating && activeTab === 'corridors' && (
           <div className="bg-deep-surface border border-petrol/60 rounded-2xl p-3 shadow-lg animate-fade-in">
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               {KERALA_CORRIDORS.map((corridor) => {
@@ -376,7 +465,7 @@ export function CommandCentre({
         )}
 
         {/* Tab 2: Hospital Directory Inline Panel */}
-        {activeTab === 'hospitals' && (
+        {!isNavigating && activeTab === 'hospitals' && (
           <Card className="animate-fade-in">
             <HospitalDirectory
               currentOrigin={DEMO_COORDS.emergency}
@@ -390,7 +479,7 @@ export function CommandCentre({
         )}
 
         {/* Tab 3: Demo Journey Simulation Controller */}
-        {activeTab === 'simulation' && (
+        {!isNavigating && activeTab === 'simulation' && (
           <Card className="bg-deep-surface border-accent-teal/60 shadow-lg shadow-accent-teal/5 animate-fade-in space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-petrol/50 pb-3">
               <div className="space-y-0.5">
@@ -510,21 +599,14 @@ export function CommandCentre({
                 style={{ width: `${Math.round(sim.progressPercent * 100)}%` }}
               />
             </div>
-
-            <div className="flex items-center gap-2 text-[10px] text-muted-text">
-              <Info className="w-3.5 h-3.5 text-accent-teal flex-shrink-0" />
-              <span>
-                Safety Assurance: Simulated vehicle coordinates run in local client memory and are NEVER broadcast over Socket.IO to avoid triggering real proximity alerts.
-              </span>
-            </div>
           </Card>
         )}
 
-        {/* Main Grid: Map & Controls */}
-        <div className="grid lg:grid-cols-3 gap-5">
-          {/* Map — spans 2 columns */}
-          <div className="lg:col-span-2 animate-slide-up flex flex-col gap-3">
-            <Card className="p-0 overflow-hidden h-[520px] sm:h-[620px] relative">
+        {/* ── Main Grid: Map & Controls ── */}
+        <div className={`grid ${isNavigating ? 'grid-cols-1' : 'lg:grid-cols-3'} gap-5`}>
+          {/* Map Column */}
+          <div className={`${isNavigating ? 'w-full' : 'lg:col-span-2'} animate-slide-up flex flex-col gap-3 relative`}>
+            <Card className={`p-0 overflow-hidden relative ${isNavigating ? 'h-[75vh] sm:h-[82vh] rounded-3xl border-2 border-[#1E6B62]' : 'h-[520px] sm:h-[620px]'}`}>
               <EmergencyMap
                 vehicles={vehicles}
                 emergency={emergency}
@@ -532,213 +614,374 @@ export function CommandCentre({
                 routeResult={routeResult}
                 onSelectRouteIndex={handleSelectRouteIndex}
                 hospitalMarkers={hospitalMarkers}
-                demoVehicleCoord={sim.isActive ? sim.currentCoord : null}
-                isDemoJourneyActive={sim.isActive}
+                demoVehicleCoord={isNavigating ? navVehicleCoord : sim.isActive ? sim.currentCoord : null}
+                isDemoJourneyActive={isNavigating || sim.isActive}
+                isNavigationActive={isNavigating}
+                traversedRouteCoordinates={isNavigating ? sim.traversedCoordinates : []}
+                remainingRouteCoordinates={isNavigating ? sim.remainingCoordinates : []}
               />
-            </Card>
 
-            {/* Route Status Strip */}
-            <div className="bg-deep-surface border border-petrol/60 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-2">
-                <div className="w-2.5 h-2.5 rounded-full bg-accent-teal" />
-                <span className="text-muted-text">Active Destination:</span>
-                <span className="font-semibold text-primary-text">
-                  {activeDestinationName}
-                </span>
-              </div>
-
-              {currentActiveRoute ? (
-                <div className="flex items-center gap-4 font-mono">
-                  <span className="text-accent-teal font-bold">
-                    {currentActiveRoute.distanceKm}
-                  </span>
-                  <span className="text-alert-amber font-bold">
-                    ~{currentActiveRoute.durationMinutes}
-                  </span>
-                </div>
-              ) : routeError ? (
-                <div className="flex items-center gap-2 text-alert-amber">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  <span>Routing offline</span>
-                  <button
-                    onClick={() => {
-                      if (selectedHospital) {
-                        handleGetHospitalDirections(selectedHospital);
-                      } else if (selectedCorridor) {
-                        loadRoute(
-                          selectedCorridor.origin.coords,
-                          selectedCorridor.destination.coords,
-                          {
-                            corridorId: selectedCorridor.id,
-                            originLabel: selectedCorridor.origin.town,
-                            destinationLabel: selectedCorridor.destination.town,
-                          },
-                          true,
-                        );
-                      }
-                    }}
-                    className="underline text-accent-teal hover:text-primary-text ml-1"
-                  >
-                    Retry
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          {/* Sidebar */}
-          <div className="space-y-5 animate-slide-in-right">
-            {/* Emergency controls */}
-            <Card>
-              <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                <Radio className="w-5 h-5 text-accent-teal" />
-                Emergency Controls
-              </h2>
-
-              {!isActive ? (
-                <div className="space-y-4">
-                  {/* Selected Destination Facility Info */}
-                  <div className="bg-petrol/30 border border-petrol/60 rounded-xl p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-accent-teal uppercase tracking-wider flex items-center gap-1">
-                        <Building2 className="w-3 h-3" />
-                        Target Facility
-                      </span>
-                      {currentActiveRoute && (
-                        <span className="text-[10px] bg-accent-teal/15 text-accent-teal px-1.5 py-0.5 rounded font-mono font-bold">
-                          {currentActiveRoute.distanceKm}
-                        </span>
-                      )}
-                    </div>
-                    <div className="font-semibold text-sm text-primary-text">
-                      {activeDestinationName}
-                    </div>
-                    <div className="text-xs text-muted-text">
-                      Route geometry via OpenStreetMap OSRM
-                    </div>
-                  </div>
-
-                  {/* Route Error & Retry */}
-                  {routeError && (
-                    <div className="bg-alert-amber/10 border border-alert-amber/30 rounded-xl p-3 text-xs text-alert-amber flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                      <div className="flex-1">
-                        <div>{routeError}</div>
-                      </div>
-                    </div>
-                  )}
-
-                  <Button
-                    variant="amber"
-                    className="w-full text-base py-3"
-                    onClick={handleStartEmergency}
-                    disabled={!connected}
-                  >
-                    <AlertTriangle className="w-5 h-5" />
-                    Activate Emergency Session
-                  </Button>
-                  <p className="text-xs text-muted-text text-center">
-                    Alerts vehicles within 1 km radius and locks destination road route
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="bg-alert-amber/10 border border-alert-amber/20 rounded-xl p-4">
-                    <div className="flex items-center justify-between text-alert-amber font-semibold text-sm mb-3">
-                      <span className="flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4" />
-                        Emergency Active
-                      </span>
-                      <span className="font-mono text-xs bg-alert-amber/20 px-2 py-0.5 rounded">
-                        {mins}:{secs.toString().padStart(2, '0')}
-                      </span>
-                    </div>
-
-                    {emergency?.isStale && (
-                      <div className="bg-alert-amber/20 border border-alert-amber/40 text-alert-amber px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 mb-2 animate-pulse">
-                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                        <span>Telemetry delayed (&gt;45s) — Re-acquiring live GPS fix</span>
-                      </div>
-                    )}
-
-                    <div className="space-y-2 text-xs border-t border-alert-amber/20 pt-2">
-                      <div className="flex justify-between">
-                        <span className="text-muted-text">Destination:</span>
-                        <span className="font-semibold text-primary-text text-right truncate max-w-[170px]">
-                          {activeDestinationName}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-text">Vehicles Alerted:</span>
-                        <span className="font-bold text-accent-teal">
-                          {alertedCount} vehicle{alertedCount !== 1 ? 's' : ''}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <Button
-                    variant="primary"
-                    className="w-full"
-                    onClick={onCompleteEmergency}
-                  >
-                    <CheckCircle2 className="w-4 h-4" />
-                    Complete — Patient Delivered
-                  </Button>
-                  <Button
-                    variant="danger"
-                    className="w-full"
-                    onClick={onCancelEmergency}
-                  >
-                    <XCircle className="w-4 h-4" />
-                    Cancel Emergency
-                  </Button>
-                </div>
+              {/* 3. GOOGLE MAPS NAVIGATION MODE OVERLAY */}
+              {isNavigating && (
+                <NavigationMode
+                  destinationName={activeDestinationName}
+                  destinationTown={activeDestinationTown}
+                  isDemoMode={navMode === 'demo'}
+                  isPaused={sim.isPaused}
+                  distanceRemainingKm={sim.distanceRemainingKm}
+                  etaMinutesRemaining={sim.etaMinutesRemaining}
+                  formattedArrivalTime={sim.formattedArrivalTime}
+                  currentManeuver={sim.currentManeuver}
+                  distanceToNextManeuver={sim.distanceToNextManeuver}
+                  nextStepPreview={sim.nextStepPreview}
+                  simulatedSpeedKmH={sim.simulatedSpeedKmH}
+                  voiceEnabled={sim.voiceEnabled}
+                  speedMultiplier={sim.speedMultiplier}
+                  onToggleVoice={sim.toggleVoice}
+                  onPauseResume={() => (sim.isPaused ? sim.resumeSimulation() : sim.pauseSimulation())}
+                  onSetSpeedMultiplier={sim.setSpeedMultiplier}
+                  onEndNavigation={handleEndNavigation}
+                  onRecenterCamera={() => {
+                    // camera auto-recenters via NavigationCameraController
+                  }}
+                  onChangeDestination={() => setShowDestinationModal(true)}
+                />
               )}
             </Card>
 
-            {/* Live Stats */}
-            <Card>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="text-center p-3 bg-petrol/30 rounded-xl">
-                  <Users className="w-5 h-5 text-accent-teal mx-auto mb-1" />
-                  <div className="text-2xl font-bold text-primary-text">
-                    {driverCount}
-                  </div>
-                  <div className="text-xs text-muted-text">Active Drivers</div>
+            {/* Route Status Strip (shown when not navigating) */}
+            {!isNavigating && (
+              <div className="bg-deep-surface border border-petrol/60 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-accent-teal" />
+                  <span className="text-muted-text">Active Destination:</span>
+                  <span className="font-semibold text-primary-text">
+                    {activeDestinationName}
+                  </span>
                 </div>
-                <div className="text-center p-3 bg-petrol/30 rounded-xl">
-                  <Navigation className="w-5 h-5 text-accent-teal mx-auto mb-1" />
-                  <div className="text-2xl font-bold text-accent-teal">
-                    {alertedCount}
-                  </div>
-                  <div className="text-xs text-muted-text">Alerted (≤1km)</div>
-                </div>
-                <div className="text-center p-3 bg-petrol/30 rounded-xl">
-                  <MapPin className="w-5 h-5 text-accent-teal mx-auto mb-1" />
-                  <div className="text-2xl font-bold text-primary-text">1 km</div>
-                  <div className="text-xs text-muted-text">Geofence Radius</div>
-                </div>
-                <div className="text-center p-3 bg-petrol/30 rounded-xl">
-                  <Compass className="w-5 h-5 text-accent-teal mx-auto mb-1" />
-                  <div className="text-2xl font-bold text-primary-text font-mono text-sm leading-8">
-                    {currentActiveRoute ? currentActiveRoute.distanceKm : '--'}
-                  </div>
-                  <div className="text-xs text-muted-text">Road Route</div>
-                </div>
-              </div>
-            </Card>
 
-            {/* Incident Timeline */}
-            <Card className="max-h-[280px] overflow-y-auto">
-              <h2 className="text-xs font-semibold mb-3 text-muted-text uppercase tracking-wider">
-                Live Incident Timeline
-              </h2>
-              <Timeline events={timeline} />
-            </Card>
+                {currentActiveRoute ? (
+                  <div className="flex items-center gap-4 font-mono">
+                    <span className="text-accent-teal font-bold">
+                      {currentActiveRoute.distanceKm}
+                    </span>
+                    <span className="text-alert-amber font-bold">
+                      ~{currentActiveRoute.durationMinutes}
+                    </span>
+                  </div>
+                ) : routeError ? (
+                  <div className="flex items-center gap-2 text-alert-amber">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>Routing offline</span>
+                    <button
+                      onClick={() => {
+                        if (selectedHospital) {
+                          handleGetHospitalDirections(selectedHospital);
+                        } else if (selectedCorridor) {
+                          loadRoute(
+                            selectedCorridor.origin.coords,
+                            selectedCorridor.destination.coords,
+                            {
+                              corridorId: selectedCorridor.id,
+                              originLabel: selectedCorridor.origin.town,
+                              destinationLabel: selectedCorridor.destination.town,
+                            },
+                            true,
+                          );
+                        }
+                      }}
+                      className="underline text-accent-teal hover:text-primary-text ml-1"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
+
+          {/* Sidebar (Hidden during active navigation mode) */}
+          {!isNavigating && (
+            <div className="space-y-5 animate-slide-in-right">
+              {/* Emergency controls */}
+              <Card>
+                <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <Radio className="w-5 h-5 text-accent-teal" />
+                  Emergency Controls
+                </h2>
+
+                {!isActive ? (
+                  <div className="space-y-4">
+                    {/* Destination Facility Info */}
+                    <div className="bg-petrol/30 border border-petrol/60 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-accent-teal uppercase tracking-wider flex items-center gap-1">
+                          <Building2 className="w-3 h-3" />
+                          Target Facility
+                        </span>
+                        {currentActiveRoute && (
+                          <span className="text-[10px] bg-accent-teal/15 text-accent-teal px-1.5 py-0.5 rounded font-mono font-bold">
+                            {currentActiveRoute.distanceKm}
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-semibold text-sm text-primary-text">
+                        {activeDestinationName}
+                      </div>
+                      <div className="text-xs text-muted-text">
+                        Route geometry via OpenStreetMap OSRM
+                      </div>
+                    </div>
+
+                    {/* Route Error & Manual Selector prompt */}
+                    {routeError && (
+                      <div className="bg-alert-amber/10 border border-alert-amber/30 rounded-xl p-3 text-xs text-alert-amber flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 space-y-2">
+                          <div>{routeError}</div>
+                          <button
+                            type="button"
+                            onClick={() => setShowDestinationModal(true)}
+                            className="px-2.5 py-1 bg-petrol text-accent-teal rounded text-xs font-semibold hover:bg-petrol/80 transition-colors"
+                          >
+                            Choose Hospital Manually
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* START NAVIGATION BUTTON (Requirement 2 & 3) */}
+                    {currentActiveRoute && (
+                      <div className="space-y-2 bg-emerald-950/20 border border-emerald-600/30 rounded-2xl p-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                            <Navigation className="w-4 h-4 text-emerald-400" />
+                            Turn-by-Turn Navigation
+                          </span>
+                          {/* Navigation Mode Choice Toggle */}
+                          <div className="flex items-center bg-midnight/80 border border-petrol/60 rounded-lg p-0.5 text-[10px]">
+                            <button
+                              type="button"
+                              onClick={() => setNavMode('demo')}
+                              className={`px-2 py-0.5 rounded font-semibold transition-all ${
+                                navMode === 'demo' ? 'bg-emerald-500 text-midnight' : 'text-muted-text'
+                              }`}
+                            >
+                              Demo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNavMode('live')}
+                              className={`px-2 py-0.5 rounded font-semibold transition-all ${
+                                navMode === 'live' ? 'bg-amber-500 text-midnight' : 'text-muted-text'
+                              }`}
+                            >
+                              Live GPS
+                            </button>
+                          </div>
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="primary"
+                          className="w-full text-sm py-2.5 bg-emerald-500 text-midnight hover:bg-emerald-400 shadow-lg shadow-emerald-500/20"
+                          onClick={handleStartNavigation}
+                        >
+                          <Navigation className="w-4 h-4" />
+                          Start Navigation Mode
+                        </Button>
+                      </div>
+                    )}
+
+                    <Button
+                      variant="amber"
+                      className="w-full text-base py-3"
+                      onClick={handleStartEmergency}
+                      disabled={!connected}
+                    >
+                      <AlertTriangle className="w-5 h-5" />
+                      Activate Emergency Session
+                    </Button>
+                    <p className="text-xs text-muted-text text-center">
+                      Alerts vehicles within 1 km radius and locks destination road route
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="bg-alert-amber/10 border border-alert-amber/20 rounded-xl p-4">
+                      <div className="flex items-center justify-between text-alert-amber font-semibold text-sm mb-3">
+                        <span className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4" />
+                          Emergency Active
+                        </span>
+                        <span className="font-mono text-xs bg-alert-amber/20 px-2 py-0.5 rounded">
+                          {mins}:{secs.toString().padStart(2, '0')}
+                        </span>
+                      </div>
+
+                      {emergency?.isStale && (
+                        <div className="bg-alert-amber/20 border border-alert-amber/40 text-alert-amber px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 mb-2 animate-pulse">
+                          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>Telemetry delayed (&gt;45s) — Re-acquiring live GPS fix</span>
+                        </div>
+                      )}
+
+                      <div className="space-y-2 text-xs border-t border-alert-amber/20 pt-2">
+                        <div className="flex justify-between">
+                          <span className="text-muted-text">Destination:</span>
+                          <span className="font-semibold text-primary-text text-right truncate max-w-[170px]">
+                            {activeDestinationName}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-text">Vehicles Alerted:</span>
+                          <span className="font-bold text-accent-teal">
+                            {alertedCount} vehicle{alertedCount !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Start Navigation in Emergency Mode */}
+                    {currentActiveRoute && (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        className="w-full text-sm py-2.5 bg-emerald-500 text-midnight hover:bg-emerald-400 shadow-lg shadow-emerald-500/20"
+                        onClick={handleStartNavigation}
+                      >
+                        <Navigation className="w-4 h-4" />
+                        Start Navigation Mode
+                      </Button>
+                    )}
+
+                    <Button
+                      variant="primary"
+                      className="w-full"
+                      onClick={onCompleteEmergency}
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      Complete — Patient Delivered
+                    </Button>
+                    <Button
+                      variant="danger"
+                      className="w-full"
+                      onClick={onCancelEmergency}
+                    >
+                      <XCircle className="w-4 h-4" />
+                      Cancel Emergency
+                    </Button>
+                  </div>
+                )}
+              </Card>
+
+              {/* Live Stats */}
+              <Card>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="text-center p-3 bg-petrol/30 rounded-xl">
+                    <Users className="w-5 h-5 text-accent-teal mx-auto mb-1" />
+                    <div className="text-2xl font-bold text-primary-text">
+                      {driverCount}
+                    </div>
+                    <div className="text-xs text-muted-text">Active Drivers</div>
+                  </div>
+                  <div className="text-center p-3 bg-petrol/30 rounded-xl">
+                    <Navigation className="w-5 h-5 text-accent-teal mx-auto mb-1" />
+                    <div className="text-2xl font-bold text-accent-teal">
+                      {alertedCount}
+                    </div>
+                    <div className="text-xs text-muted-text">Alerted (≤1km)</div>
+                  </div>
+                  <div className="text-center p-3 bg-petrol/30 rounded-xl">
+                    <MapPin className="w-5 h-5 text-accent-teal mx-auto mb-1" />
+                    <div className="text-2xl font-bold text-primary-text">1 km</div>
+                    <div className="text-xs text-muted-text">Geofence Radius</div>
+                  </div>
+                  <div className="text-center p-3 bg-petrol/30 rounded-xl">
+                    <Compass className="w-5 h-5 text-accent-teal mx-auto mb-1" />
+                    <div className="text-2xl font-bold text-primary-text font-mono text-sm leading-8">
+                      {currentActiveRoute ? currentActiveRoute.distanceKm : '--'}
+                    </div>
+                    <div className="text-xs text-muted-text">Road Route</div>
+                  </div>
+                </div>
+              </Card>
+
+              {/* Incident Timeline */}
+              <Card className="max-h-[280px] overflow-y-auto">
+                <h2 className="text-xs font-semibold mb-3 text-muted-text uppercase tracking-wider">
+                  Live Incident Timeline
+                </h2>
+                <Timeline events={timeline} />
+              </Card>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* 4. MANUAL DESTINATION SELECTION MODAL */}
+      {showDestinationModal && (
+        <div className="fixed inset-0 z-50 bg-midnight/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-deep-surface border border-petrol/80 rounded-3xl max-w-lg w-full p-5 space-y-4 shadow-2xl animate-scale-up">
+            <div className="flex items-center justify-between border-b border-petrol/40 pb-3">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-accent-teal" />
+                <h3 className="font-bold text-base text-primary-text">
+                  Choose Destination Facility
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDestinationModal(false)}
+                className="text-muted-text hover:text-primary-text p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-muted-text">
+              Select any of the 13 verified healthcare facilities. The route will automatically recalculate.
+            </p>
+
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {KERALA_HOSPITALS.map((h) => {
+                const isSelected = selectedHospital?.id === h.id;
+                return (
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => {
+                      handleGetHospitalDirections(h);
+                      setShowDestinationModal(false);
+                    }}
+                    className={`w-full text-left p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                      isSelected
+                        ? 'bg-petrol border-accent-teal text-primary-text'
+                        : 'bg-midnight/60 border-petrol/50 text-muted-text hover:text-primary-text hover:border-petrol'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs sm:text-sm text-primary-text">
+                        {h.name}
+                      </div>
+                      <div className="text-[11px] text-muted-text">
+                        {h.town}, {h.district} • {h.address}
+                      </div>
+                    </div>
+                    <CornerUpRight className="w-4 h-4 text-accent-teal flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Button size="sm" variant="ghost" onClick={() => setShowDestinationModal(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

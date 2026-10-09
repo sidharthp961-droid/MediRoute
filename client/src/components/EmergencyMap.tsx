@@ -113,13 +113,16 @@ const demoVehicleIcon = L.divIcon({
 function MapBoundsUpdater({
   routeCoordinates,
   center,
+  disabled = false,
 }: {
   routeCoordinates?: [number, number][];
   center: Coordinates;
+  disabled?: boolean;
 }) {
   const map = useMap();
 
   useEffect(() => {
+    if (disabled) return;
     if (routeCoordinates && routeCoordinates.length > 1) {
       try {
         const bounds = L.latLngBounds(routeCoordinates.map((c) => L.latLng(c[0], c[1])));
@@ -130,7 +133,36 @@ function MapBoundsUpdater({
     } else if (center) {
       map.setView([center.lat, center.lng], 14, { animate: true });
     }
-  }, [routeCoordinates, center.lat, center.lng, map]);
+  }, [routeCoordinates, center.lat, center.lng, disabled, map]);
+
+  return null;
+}
+
+// Dedicated vehicle follower: keeps vehicle around lower-middle of viewport (~30% from bottom)
+function NavigationCameraController({
+  vehicleCoord,
+  isNavigating,
+  zoom = 16,
+}: {
+  vehicleCoord?: Coordinates | null;
+  isNavigating?: boolean;
+  zoom?: number;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!isNavigating || !vehicleCoord) return;
+
+    // Offset camera slightly north/forward (~280m at zoom 16) so vehicle sits at lower-middle of viewport
+    const offsetLat = vehicleCoord.lat + 0.0025;
+    const offsetLng = vehicleCoord.lng;
+
+    map.setView([offsetLat, offsetLng], zoom, {
+      animate: true,
+      duration: 0.5,
+      easeLinearity: 0.25,
+    });
+  }, [vehicleCoord?.lat, vehicleCoord?.lng, isNavigating, zoom, map]);
 
   return null;
 }
@@ -159,6 +191,9 @@ interface EmergencyMapProps {
   showRouteControls?: boolean;
   demoVehicleCoord?: Coordinates | null;
   isDemoJourneyActive?: boolean;
+  isNavigationActive?: boolean;
+  traversedRouteCoordinates?: [number, number][];
+  remainingRouteCoordinates?: [number, number][];
 }
 
 export function EmergencyMap({
@@ -172,6 +207,9 @@ export function EmergencyMap({
   showRouteControls = true,
   demoVehicleCoord = null,
   isDemoJourneyActive = false,
+  isNavigationActive = false,
+  traversedRouteCoordinates = [],
+  remainingRouteCoordinates = [],
 }: EmergencyMapProps) {
   const defaultCenter: Coordinates = center || emergency?.origin || KERALA_CENTER;
 
@@ -220,11 +258,21 @@ export function EmergencyMap({
           }}
         />
 
-        {/* Dynamic Bounds / Center Updater */}
+        {/* Dynamic Bounds / Center Updater (active when not in camera navigation mode) */}
         <MapBoundsUpdater
           routeCoordinates={activeRoute?.coordinates}
           center={emergency?.origin || defaultCenter}
+          disabled={isNavigationActive}
         />
+
+        {/* Dedicated Navigation Camera Follower (keeps vehicle at lower-middle of viewport) */}
+        {isNavigationActive && (
+          <NavigationCameraController
+            vehicleCoord={demoVehicleCoord}
+            isNavigating={isNavigationActive}
+            zoom={16}
+          />
+        )}
 
         {/* Emergency 1 km proximity radius circle */}
         {emergency?.status === 'active' && (
@@ -241,87 +289,129 @@ export function EmergencyMap({
           />
         )}
 
-        {/* Alternative Routes (rendered underneath primary) */}
-        {routeResult?.routes?.map((route, idx) => {
-          if (idx === selectedRouteIdx) return null; // rendered separately on top
-          return (
-            <Polyline
-              key={route.id}
-              positions={route.coordinates}
-              pathOptions={{
-                color: '#9AB9B5',
-                weight: 4,
-                opacity: 0.6,
-                dashArray: '6 6',
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-              eventHandlers={{
-                click: () => handleRouteClick(idx),
-              }}
-            >
-              <Popup>
-                <div className="text-sm">
-                  <div className="font-bold text-primary-text">Alternative Route {idx}</div>
-                  <div className="text-muted-text text-xs mt-1">
-                    Distance: {route.distanceKm} | Duration: ~{route.durationMinutes}
+        {/* Alternative Routes (rendered underneath primary when not actively navigating) */}
+        {!isNavigationActive &&
+          routeResult?.routes?.map((route, idx) => {
+            if (idx === selectedRouteIdx) return null; // rendered separately on top
+            return (
+              <Polyline
+                key={route.id}
+                positions={route.coordinates}
+                pathOptions={{
+                  color: '#9AB9B5',
+                  weight: 4,
+                  opacity: 0.6,
+                  dashArray: '6 6',
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+                eventHandlers={{
+                  click: () => handleRouteClick(idx),
+                }}
+              >
+                <Popup>
+                  <div className="text-sm">
+                    <div className="font-bold text-primary-text">Alternative Route {idx}</div>
+                    <div className="text-muted-text text-xs mt-1">
+                      Distance: {route.distanceKm} | Duration: ~{route.durationMinutes}
+                    </div>
+                    <button
+                      onClick={() => handleRouteClick(idx)}
+                      className="mt-2 px-2 py-1 bg-petrol text-accent-teal rounded text-xs font-semibold hover:bg-petrol/80"
+                    >
+                      Select this route
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleRouteClick(idx)}
-                    className="mt-2 px-2 py-1 bg-petrol text-accent-teal rounded text-xs font-semibold hover:bg-petrol/80"
-                  >
-                    Select this route
-                  </button>
-                </div>
-              </Popup>
-            </Polyline>
-          );
-        })}
+                </Popup>
+              </Polyline>
+            );
+          })}
 
-        {/* Selected Primary Route (Glowing high-contrast road polyline) */}
-        {activeRoute && (
+        {/* Google Maps Navigation Mode: Distinct Traversed vs Remaining Route Highlighting */}
+        {isNavigationActive && remainingRouteCoordinates.length > 0 ? (
           <>
-            {/* Dark casing/outline underneath for high contrast on dark tile map */}
+            {/* Traversed route segment (muted slate grey) */}
+            {traversedRouteCoordinates.length > 1 && (
+              <Polyline
+                positions={traversedRouteCoordinates}
+                pathOptions={{
+                  color: '#42585E',
+                  weight: 5,
+                  opacity: 0.55,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              />
+            )}
+
+            {/* Remaining route segment (glowing high-visibility cyan with dark casing) */}
             <Polyline
-              positions={activeRoute.coordinates}
+              positions={remainingRouteCoordinates}
               pathOptions={{
                 color: '#071B20',
-                weight: 8,
-                opacity: 0.9,
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-            />
-            {/* Glowing teal emergency corridor */}
-            <Polyline
-              positions={activeRoute.coordinates}
-              pathOptions={{
-                color: '#5DE4D0',
-                weight: 5,
+                weight: 9,
                 opacity: 0.95,
                 lineCap: 'round',
                 lineJoin: 'round',
               }}
-            >
-              <Popup>
-                <div className="text-sm min-w-[180px]">
-                  <div className="font-bold text-accent-teal">
-                    {routeResult.corridorId ? 'Kerala Priority Corridor' : 'Active Road Route'}
-                  </div>
-                  <div className="text-primary-text text-xs font-medium mt-1">
-                    {activeRoute.summary || 'OpenStreetMap Verified Route'}
-                  </div>
-                  <div className="text-muted-text text-xs mt-1 space-y-0.5">
-                    <div>Road distance: <span className="font-semibold text-primary-text">{activeRoute.distanceKm}</span></div>
-                    <div>Est. travel time: <span className="font-semibold text-primary-text">{activeRoute.durationMinutes}</span></div>
-                  </div>
-                  <div className="text-[10px] text-muted-text/70 mt-2 border-t border-petrol pt-1">
-                    Road geometry via OSRM / OpenStreetMap
-                  </div>
-                </div>
-              </Popup>
-            </Polyline>
+            />
+            <Polyline
+              positions={remainingRouteCoordinates}
+              pathOptions={{
+                color: '#5DE4D0',
+                weight: 6,
+                opacity: 0.98,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
           </>
+        ) : (
+          /* Standard Overview Primary Route */
+          activeRoute && (
+            <>
+              {/* Dark casing/outline underneath for high contrast on dark tile map */}
+              <Polyline
+                positions={activeRoute.coordinates}
+                pathOptions={{
+                  color: '#071B20',
+                  weight: 8,
+                  opacity: 0.9,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              />
+              {/* Glowing teal emergency corridor */}
+              <Polyline
+                positions={activeRoute.coordinates}
+                pathOptions={{
+                  color: '#5DE4D0',
+                  weight: 5,
+                  opacity: 0.95,
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                }}
+              >
+                <Popup>
+                  <div className="text-sm min-w-[180px]">
+                    <div className="font-bold text-accent-teal">
+                      {routeResult.corridorId ? 'Kerala Priority Corridor' : 'Active Road Route'}
+                    </div>
+                    <div className="text-primary-text text-xs font-medium mt-1">
+                      {activeRoute.summary || 'OpenStreetMap Verified Route'}
+                    </div>
+                    <div className="text-muted-text text-xs mt-1 space-y-0.5">
+                      <div>Road distance: <span className="font-semibold text-primary-text">{activeRoute.distanceKm}</span></div>
+                      <div>Est. travel time: <span className="font-semibold text-primary-text">{activeRoute.durationMinutes}</span></div>
+                    </div>
+                    <div className="text-[10px] text-muted-text/70 mt-2 border-t border-petrol pt-1">
+                      Road geometry via OSRM / OpenStreetMap
+                    </div>
+                  </div>
+                </Popup>
+              </Polyline>
+            </>
+          )
         )}
 
         {/* Hospital Markers */}
