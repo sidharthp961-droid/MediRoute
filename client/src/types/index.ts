@@ -1,5 +1,15 @@
 // ─── Client-side types (mirrors server types without socketId) ───
 
+export type UserRole = 'driver' | 'admin';
+
+export interface AuthUser {
+  role: UserRole;
+  name: string;
+  phone?: string;
+  registrationNumber?: string;
+  token?: string;
+}
+
 export interface Coordinates {
   lat: number;
   lng: number;

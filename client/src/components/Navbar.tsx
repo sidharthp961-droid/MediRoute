@@ -11,6 +11,8 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { StatusDot } from './ui';
+import { useAuth } from '@/lib/authContext';
+import { LogIn, LogOut, UserCheck } from 'lucide-react';
 
 interface NavbarProps {
   connected: boolean;
@@ -18,6 +20,7 @@ interface NavbarProps {
 
 export function Navbar({ connected }: NavbarProps) {
   const location = useLocation();
+  const { user, logout } = useAuth();
 
   const links = [
     { to: '/', label: 'Home', icon: Activity },
@@ -50,7 +53,7 @@ export function Navbar({ connected }: NavbarProps) {
                 <Link
                   key={to}
                   to={to}
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                     active
                       ? 'bg-petrol text-accent-teal'
                       : 'text-muted-text hover:text-primary-text hover:bg-petrol/50'
@@ -63,21 +66,55 @@ export function Navbar({ connected }: NavbarProps) {
             })}
           </div>
 
-          {/* Connection status */}
-          <div className="flex items-center gap-2 text-sm">
-            {connected ? (
-              <>
-                <StatusDot status="online" />
-                <Wifi className="w-4 h-4 text-accent-teal" />
-                <span className="hidden sm:inline text-muted-text">Connected</span>
-              </>
+          {/* Right side: Auth status & Connection status */}
+          <div className="flex items-center gap-3 text-sm">
+            {/* User session status */}
+            {user ? (
+              <div className="flex items-center gap-2 bg-petrol/60 border border-petrol/80 rounded-lg px-2.5 py-1">
+                <span className="text-xs font-semibold text-accent-teal flex items-center gap-1">
+                  {user.role === 'admin' ? (
+                    <>🛡️ {user.name.split(' ')[0]}</>
+                  ) : (
+                    <>🚗 {user.registrationNumber || user.name.split(' ')[0]}</>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={logout}
+                  title="Sign Out"
+                  className="text-muted-text hover:text-red-400 transition-colors ml-0.5"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
             ) : (
-              <>
-                <StatusDot status="offline" />
-                <WifiOff className="w-4 h-4 text-red-400" />
-                <span className="hidden sm:inline text-red-400">Disconnected</span>
-              </>
+              <Link
+                to="/login"
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${
+                  location.pathname === '/login'
+                    ? 'bg-accent-teal text-midnight'
+                    : 'text-accent-teal hover:bg-accent-teal/15 border border-accent-teal/30'
+                }`}
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Sign In</span>
+              </Link>
             )}
+
+            {/* Connection status */}
+            <div className="flex items-center gap-1.5 text-xs">
+              {connected ? (
+                <>
+                  <StatusDot status="online" />
+                  <span className="hidden lg:inline text-muted-text">Connected</span>
+                </>
+              ) : (
+                <>
+                  <StatusDot status="offline" />
+                  <span className="hidden lg:inline text-red-400">Offline</span>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

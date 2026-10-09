@@ -615,11 +615,89 @@ async function runTestSuite() {
     moderatorSocket.disconnect();
     testDriverSocket.disconnect();
 
+    // ── TEST GROUP 7: ROLE-AWARE LOGIN & ADMIN AUTHORIZATION ──
+    console.log('\n--- TEST GROUP 7: Role-Aware Login & Admin Authorization ---');
+
+    // 1. Driver login with optional registration
+    const driverLoginRes = await fetch(`${serverUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'driver',
+        name: 'Arun Kumar',
+        phone: '9876543210',
+        registrationNumber: 'KL-07-CA-1234',
+      }),
+    });
+    const driverLoginData: any = await driverLoginRes.json();
+    assert(driverLoginRes.status === 200, 'Driver login returns HTTP 200');
+    assert(driverLoginData.user?.role === 'driver', 'Driver login assigns role "driver"');
+    assert(driverLoginData.user?.registrationNumber === 'KL 07 CA 1234', 'Driver login formats vehicle plate');
+
+    // 2. Driver login rejects invalid registration
+    const badRegRes = await fetch(`${serverUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'driver',
+        name: 'Test Driver',
+        registrationNumber: 'INVALID_PLATE_123',
+      }),
+    });
+    assert(badRegRes.status === 400, 'Driver login rejects invalid registration format');
+
+    // 3. Admin login with correct key
+    const adminLoginRes = await fetch(`${serverUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'admin',
+        name: 'Chief Dispatcher',
+        key: TEST_MOD_KEY,
+      }),
+    });
+    const adminLoginData: any = await adminLoginRes.json();
+    assert(adminLoginRes.status === 200, 'Admin login with valid key returns HTTP 200');
+    assert(adminLoginData.user?.role === 'admin', 'Admin login assigns role "admin"');
+    assert(adminLoginData.token === TEST_MOD_KEY, 'Admin login returns authorization token');
+
+    // 4. Admin login with wrong key fails safely
+    const badAdminRes = await fetch(`${serverUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'admin',
+        name: 'Unauthorized User',
+        key: 'incorrect-secret-key',
+      }),
+    });
+    assert(badAdminRes.status === 401, 'Admin login with invalid key rejected with HTTP 401');
+
+    // 5. Invalid role rejection
+    const invalidRoleRes = await fetch(`${serverUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'superadmin' }),
+    });
+    assert(invalidRoleRes.status === 400, 'Unsupported roles rejected with HTTP 400');
+
+    // 6. Admin token verification endpoint
+    const verifyRes = await fetch(`${serverUrl}/api/auth/verify`, {
+      headers: { 'x-moderator-key': TEST_MOD_KEY },
+    });
+    assert(verifyRes.status === 200, 'Admin token verify returns HTTP 200 for valid key');
+
+    const badVerifyRes = await fetch(`${serverUrl}/api/auth/verify`, {
+      headers: { 'x-moderator-key': 'wrong-key' },
+    });
+    assert(badVerifyRes.status === 401, 'Admin token verify returns HTTP 401 for invalid key');
+
     // Disconnect clients
     emergencySocket.disconnect();
     privateVehicle1.disconnect();
     privateVehicle2.disconnect();
     privateVehicle3.disconnect();
+    await new Promise((r) => setTimeout(r, 300));
   } catch (err) {
     console.error('Socket integration test error:', err);
     failed++;

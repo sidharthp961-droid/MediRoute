@@ -10,6 +10,7 @@ import { ClientToServerEvents, ServerToClientEvents } from './types';
 
 import { state } from './state';
 import { isValidCoordinates } from './geofence';
+import { isValidRegistration, formatRegistration } from './validation';
 import {
   ALLOWED_CATEGORIES,
   isAuthorizedModerator,
@@ -48,6 +49,76 @@ app.get('/api/health', (_req, res) => {
     uptime: process.uptime(),
     timestamp: Date.now(),
   });
+});
+
+// ─── Role-Aware Authentication Endpoints (Phase 1) ───
+
+// Authenticate either private driver or administrator
+app.post('/api/auth/login', (req, res) => {
+  const { role, name, phone, registrationNumber, key } = req.body || {};
+
+  if (!role || (role !== 'driver' && role !== 'admin')) {
+    return res.status(400).json({
+      error: "Invalid role specified. Supported roles are 'driver' and 'admin'",
+    });
+  }
+
+  if (role === 'admin') {
+    if (!isAuthorizedModerator(key)) {
+      return res.status(401).json({
+        error: 'Invalid or missing administrator authorization key',
+      });
+    }
+
+    const adminName =
+      name && typeof name === 'string' && name.trim().length > 0
+        ? name.trim()
+        : 'System Administrator';
+
+    return res.json({
+      success: true,
+      user: {
+        role: 'admin',
+        name: adminName,
+      },
+      token: key,
+    });
+  }
+
+  // Driver role
+  const driverName =
+    name && typeof name === 'string' && name.trim().length > 0
+      ? name.trim()
+      : 'Private Driver';
+
+  let formattedReg: string | undefined = undefined;
+  if (registrationNumber && typeof registrationNumber === 'string' && registrationNumber.trim().length > 0) {
+    if (!isValidRegistration(registrationNumber)) {
+      return res.status(400).json({
+        error: 'Invalid vehicle registration plate format (e.g., KL 07 CA 1234)',
+      });
+    }
+    formattedReg = formatRegistration(registrationNumber);
+  }
+
+  return res.json({
+    success: true,
+    user: {
+      role: 'driver',
+      name: driverName,
+      phone: phone && typeof phone === 'string' ? phone.trim() : undefined,
+      registrationNumber: formattedReg,
+    },
+  });
+});
+
+// Verify administrator session token
+app.get('/api/auth/verify', (req, res) => {
+  const modKey = (req.headers['x-moderator-key'] as string) || (req.query?.key as string);
+  if (isAuthorizedModerator(modKey)) {
+    return res.json({ role: 'admin', authenticated: true });
+  }
+  return res.status(401).json({ error: 'Unauthenticated or invalid administrator key' });
 });
 
 // ─── Emergency Reports REST Endpoints (Phase 5) ───
