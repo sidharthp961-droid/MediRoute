@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Midnight Petrol base ── */
+:root {
+  --midnight: #071B20;
+  --deep-surface: #0B272D;
+  --petrol: #12363A;
+  --accent-teal: #5DE4D0;
+  --alert-amber: #F0B85A;
+  --primary-text: #F0FAF8;
+  --muted-text: #9AB9B5;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--petrol) var(--deep-surface);
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--deep-surface);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--petrol);
+  border-radius: 3px;
+}
+
+/* ── Leaflet overrides for dark theme ── */
+.leaflet-container {
+  background: var(--midnight) !important;
+  font-family: 'Inter', sans-serif !important;
+}
+
+/* ── OpenStreetMap dark tile styling for Midnight Petrol aesthetic ── */
+.osm-tiles {
+  filter: brightness(0.62) invert(1) contrast(1.25) hue-rotate(185deg) saturate(0.35) brightness(0.85);
+}
+
+
+.leaflet-control-zoom a {
+  background-color: var(--deep-surface) !important;
+  color: var(--primary-text) !important;
+  border-color: var(--petrol) !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background-color: var(--petrol) !important;
+}
+
+.leaflet-control-attribution {
+  background: rgba(7, 27, 32, 0.8) !important;
+  color: var(--muted-text) !important;
+  font-size: 10px !important;
+}
+
+.leaflet-control-attribution a {
+  color: var(--accent-teal) !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background: var(--deep-surface) !important;
+  color: var(--primary-text) !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--petrol) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+}
+
+.leaflet-popup-tip {
+  background: var(--deep-surface) !important;
+}
+
+.leaflet-popup-close-button {
+  color: var(--muted-text) !important;
+}
+
+/* ── Emergency pulse marker ── */
+.emergency-marker {
+  position: relative;
+}
+
+.emergency-marker::before {
+  content: '';
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  background: rgba(93, 228, 208, 0.2);
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+/* ── Alert flash for driver dashboard ── */
+@keyframes alert-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.alert-flash {
+  animation: alert-flash 1.5s ease-in-out infinite;
+}
+
+/* ── Glass card utility ── */
+.glass-card {
+  background: rgba(11, 39, 45, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(18, 54, 58, 0.6);
+  border-radius: 16px;
+}
