@@ -46,9 +46,9 @@ export function ModeratorPage({
 }: ModeratorPageProps) {
   const [moderatorKey, setModeratorKey] = useState<string>(() => {
     try {
-      return localStorage.getItem('mediroute_mod_key') || 'mediroute-mod-hackathon-2026';
+      return localStorage.getItem('mediroute_mod_key') || '';
     } catch {
-      return 'mediroute-mod-hackathon-2026';
+      return '';
     }
   });
   const [moderatorName, setModeratorName] = useState<string>('Dispatcher Mod-1');
@@ -138,8 +138,8 @@ export function ModeratorPage({
             type="password"
             value={moderatorKey}
             onChange={(e) => saveModKey(e.target.value)}
-            placeholder="Enter moderator secret..."
-            className="bg-midnight border border-petrol/50 rounded-lg px-2.5 py-1 text-xs text-primary-text focus:outline-none focus:border-accent-teal w-44 font-mono"
+            placeholder="Enter moderator key..."
+            className="bg-midnight border border-petrol/50 rounded-lg px-2.5 py-1 text-xs text-primary-text focus:outline-none focus:border-accent-teal w-48 font-mono"
           />
           <input
             type="text"
@@ -148,14 +148,16 @@ export function ModeratorPage({
             placeholder="Moderator Name"
             className="bg-midnight border border-petrol/50 rounded-lg px-2.5 py-1 text-xs text-primary-text focus:outline-none focus:border-accent-teal w-32"
           />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => saveModKey('mediroute-mod-hackathon-2026')}
-            className="text-[11px] py-1"
-          >
-            Use Demo Key
-          </Button>
+          {moderatorKey && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => saveModKey('')}
+              className="text-[11px] py-1 text-muted-text hover:text-red-400"
+            >
+              Clear Key
+            </Button>
+          )}
         </div>
       </div>
 
@@ -164,9 +166,9 @@ export function ModeratorPage({
         <Info className="w-4 h-4 text-accent-teal shrink-0 mt-0.5" />
         <div className="space-y-0.5 text-[11px] leading-relaxed">
           <span className="text-primary-text font-semibold block">
-            Hackathon Authorization & Safety Guarantees:
+            Moderator Authorization & Safety Guarantees:
           </span>
-          All verification and status changes are validated server-side against the shared moderator token. Ordinary users cannot mark their own reports as verified. Verified reports require an explicit, authorized escalation action before triggering the 1 km driver geofence.
+          All verification and status changes are validated server-side against the environment moderator key (`process.env.MODERATOR_KEY`). If the environment variable is not configured on the server, all verification requests fail safely. Ordinary users cannot mark their own reports as verified. Verified reports require an explicit, authorized escalation action before triggering the 1 km driver geofence.
         </div>
       </div>
 

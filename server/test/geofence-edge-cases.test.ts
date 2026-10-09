@@ -14,10 +14,14 @@ import {
 import {
   validateAndFingerprintPhoto,
   analyzeReportRisk,
-  MODERATOR_SECRET,
+  getModeratorKey,
+  isAuthorizedModerator,
   ALLOWED_CATEGORIES,
 } from '../src/reportValidation';
 import { io as ClientSocket, Socket } from 'socket.io-client';
+
+const TEST_MOD_KEY = process.env.MODERATOR_KEY || 'test-moderator-key-audit-suite';
+process.env.MODERATOR_KEY = TEST_MOD_KEY;
 
 const R = 6_371_000;
 const ORIGIN = { lat: 9.895900, lng: 76.718400 }; // Thodupuzha Emergency Hub
@@ -400,6 +404,28 @@ async function runTestSuite() {
     // ════════════════════════════════════════════════════════════════
     console.log('\n--- TEST GROUP 6: Emergency Report Verification and Misuse Prevention ---');
 
+    // 0. Moderator Key Security & Fail-Safe Verification
+    const originalEnvKey = process.env.MODERATOR_KEY;
+
+    // Test missing environment variable (fail safely)
+    delete process.env.MODERATOR_KEY;
+    assert(getModeratorKey() === undefined, 'getModeratorKey returns undefined when MODERATOR_KEY is missing (no hardcoded fallback)');
+    assert(isAuthorizedModerator('any-key') === false, 'isAuthorizedModerator fails safely when MODERATOR_KEY is missing');
+    assert(isAuthorizedModerator('') === false, 'isAuthorizedModerator rejects empty string when MODERATOR_KEY is missing');
+    assert(isAuthorizedModerator(null) === false, 'isAuthorizedModerator rejects null when MODERATOR_KEY is missing');
+
+    // Test empty/whitespace environment variable (fail safely)
+    process.env.MODERATOR_KEY = '   ';
+    assert(getModeratorKey() === undefined, 'getModeratorKey returns undefined when MODERATOR_KEY is blank whitespace');
+    assert(isAuthorizedModerator('   ') === false, 'isAuthorizedModerator fails safely when MODERATOR_KEY is blank whitespace');
+
+    // Test configured environment variable
+    process.env.MODERATOR_KEY = TEST_MOD_KEY;
+    assert(getModeratorKey() === TEST_MOD_KEY, 'getModeratorKey reads strictly from process.env.MODERATOR_KEY');
+    assert(isAuthorizedModerator(TEST_MOD_KEY) === true, 'isAuthorizedModerator accepts matching moderator key');
+    assert(isAuthorizedModerator('wrong-secret') === false, 'isAuthorizedModerator rejects incorrect key');
+    assert(isAuthorizedModerator('') === false, 'isAuthorizedModerator rejects blank provided key');
+
     // 1. Photo validation & fingerprinting
     const validPhoto = 'data:image/jpeg;base64,' + Buffer.from('fake-jpeg-binary-image-content-12345').toString('base64');
     const photoRes = validateAndFingerprintPhoto(validPhoto);
@@ -559,7 +585,7 @@ async function runTestSuite() {
       reportId: receivedCreatedReport.id,
       newStatus: 'VERIFIED',
       reason: 'Confirmed by local police patrol unit',
-      moderatorKey: MODERATOR_SECRET,
+      moderatorKey: TEST_MOD_KEY,
       moderatorName: 'Dispatcher Station 1',
     });
     await new Promise((r) => setTimeout(r, 600));
@@ -574,7 +600,7 @@ async function runTestSuite() {
     // F: Explicit Escalation to Active Emergency Corridor
     moderatorSocket.emit('report:escalate', {
       reportId: receivedUpdatedReport.id,
-      moderatorKey: MODERATOR_SECRET,
+      moderatorKey: TEST_MOD_KEY,
     });
     await new Promise((r) => setTimeout(r, 800));
 

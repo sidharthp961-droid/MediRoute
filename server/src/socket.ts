@@ -16,7 +16,7 @@ import {
 import {
   analyzeReportRisk,
   validateAndFingerprintPhoto,
-  MODERATOR_SECRET,
+  isAuthorizedModerator,
   ALLOWED_CATEGORIES,
   getPublicReport,
 } from './reportValidation';
@@ -614,7 +614,7 @@ export function setupSocketHandlers(io: IOServer): void {
 
     // ── Moderator Verification Workflow ──
     socket.on('report:update-status', (data) => {
-      if (!data || data.moderatorKey !== MODERATOR_SECRET) {
+      if (!data || !isAuthorizedModerator(data.moderatorKey)) {
         socket.emit('report:error', {
           message: 'Unauthorized: valid moderator authorization key required',
         });
@@ -651,7 +651,7 @@ export function setupSocketHandlers(io: IOServer): void {
 
     // ── Escalate Verified Report into Active Emergency Corridor ──
     socket.on('report:escalate', (data) => {
-      if (!data || data.moderatorKey !== MODERATOR_SECRET) {
+      if (!data || !isAuthorizedModerator(data.moderatorKey)) {
         socket.emit('report:error', {
           message: 'Unauthorized: valid moderator authorization key required',
         });

@@ -12,7 +12,7 @@ import { state } from './state';
 import { isValidCoordinates } from './geofence';
 import {
   ALLOWED_CATEGORIES,
-  MODERATOR_SECRET,
+  isAuthorizedModerator,
   validateAndFingerprintPhoto,
   analyzeReportRisk,
   getPublicReport,
@@ -137,7 +137,7 @@ app.post('/api/reports', (req, res) => {
 // Moderator: update report status (requires moderator key)
 app.post('/api/reports/:id/verify', (req, res) => {
   const modKey = (req.headers['x-moderator-key'] as string) || req.body?.moderatorKey;
-  if (modKey !== MODERATOR_SECRET) {
+  if (!isAuthorizedModerator(modKey)) {
     return res.status(401).json({ error: 'Unauthorized: valid moderator authorization key required' });
   }
 
@@ -166,7 +166,7 @@ app.post('/api/reports/:id/verify', (req, res) => {
 // Moderator: escalate verified report to active emergency corridor
 app.post('/api/reports/:id/escalate', (req, res) => {
   const modKey = (req.headers['x-moderator-key'] as string) || req.body?.moderatorKey;
-  if (modKey !== MODERATOR_SECRET) {
+  if (!isAuthorizedModerator(modKey)) {
     return res.status(401).json({ error: 'Unauthorized: valid moderator authorization key required' });
   }
 

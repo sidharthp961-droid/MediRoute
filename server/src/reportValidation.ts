@@ -17,6 +17,9 @@ export const ALLOWED_CATEGORIES: EmergencyCategory[] = [
 export const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 export const MAX_PHOTO_DATA_URL_LENGTH = Math.ceil((MAX_PHOTO_BYTES * 4) / 3) + 200;
 
+import dotenv from 'dotenv';
+dotenv.config();
+
 export const KERALA_BOUNDS = {
   minLat: 8.0,
   maxLat: 13.0,
@@ -24,7 +27,40 @@ export const KERALA_BOUNDS = {
   maxLng: 77.8,
 };
 
-export const MODERATOR_SECRET = process.env.MODERATOR_KEY || 'mediroute-mod-hackathon-2026';
+/**
+ * Retrieves the configured moderator secret key strictly from process.env.MODERATOR_KEY.
+ * Does NOT provide any hardcoded default fallback.
+ * Returns undefined if MODERATOR_KEY is missing or empty.
+ */
+export function getModeratorKey(): string | undefined {
+  const key = process.env.MODERATOR_KEY;
+  if (!key || typeof key !== 'string' || key.trim() === '') {
+    return undefined;
+  }
+  return key.trim();
+}
+
+/**
+ * Validates a submitted moderator key against process.env.MODERATOR_KEY.
+ * Fails safely (returns false) if MODERATOR_KEY is not configured in the environment.
+ */
+export function isAuthorizedModerator(providedKey?: string | null): boolean {
+  const configuredKey = getModeratorKey();
+  if (!configuredKey) {
+    // Fail safely: If MODERATOR_KEY is not configured, reject all authorization attempts
+    return false;
+  }
+  if (!providedKey || typeof providedKey !== 'string') {
+    return false;
+  }
+  return providedKey.trim() === configuredKey;
+}
+
+/**
+ * Accessor for the active moderator secret read from process.env.MODERATOR_KEY only.
+ * No hardcoded fallback.
+ */
+export const MODERATOR_SECRET = process.env.MODERATOR_KEY?.trim() || undefined;
 
 export const RISK_DISCLAIMER =
   'Automated risk flags support human review and do not conclusively determine whether a report is genuine or fake.';
