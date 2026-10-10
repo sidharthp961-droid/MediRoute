@@ -1,21 +1,51 @@
-// ─── App.tsx — Main application with routing ───
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+// ─── App.tsx ─ Main application with routing ───
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { Navbar } from '@/components/Navbar';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useSocket } from '@/hooks/useSocket';
 import { AuthProvider } from '@/lib/authContext';
 import { LandingPage } from '@/pages/LandingPage';
 import { CommandCentre } from '@/pages/CommandCentre';
 import { DriverDashboard } from '@/pages/DriverDashboard';
+import { CarDashboardPage } from '@/pages/CarDashboardPage';
 import { MonitorPage } from '@/pages/MonitorPage';
 import { ReportEmergencyPage } from '@/pages/ReportEmergencyPage';
 import { ModeratorPage } from '@/pages/ModeratorPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { DEMO_COORDS } from '@/types';
 
+function MainLayout({
+  connected,
+  error,
+  children,
+}: {
+  connected: boolean;
+  error: string | null;
+  children: React.ReactNode;
+}) {
+  const location = useLocation();
+  const isCarDashboard = location.pathname.startsWith('/car');
+
+  return (
+    <div className="min-h-screen bg-midnight text-primary-text">
+      {/* Hide regular navbar when in specialized full-screen car dashboard HUD */}
+      {!isCarDashboard && <Navbar connected={connected} />}
+
+      {/* Global error toast */}
+      {error && (
+        <div className="fixed top-20 right-4 z-50 bg-red-500/20 border border-red-500/30 text-red-400 px-4 py-3 rounded-xl text-sm animate-slide-in-right max-w-sm">
+          {error}
+        </div>
+      )}
+
+      {children}
+    </div>
+  );
+}
+
 export default function App() {
   const {
     connected,
-    vehicleId,
     vehicles,
     emergency,
     timeline,
@@ -33,7 +63,6 @@ export default function App() {
     startEmergency,
     cancelEmergency,
     completeEmergency,
-    updateLocation,
     createSimVehicle,
     moveSimVehicle,
     stopSimulation,
@@ -43,16 +72,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <div className="min-h-screen bg-midnight text-primary-text">
-          <Navbar connected={connected} />
-
-          {/* Global error toast */}
-          {error && (
-            <div className="fixed top-20 right-4 z-50 bg-red-500/20 border border-red-500/30 text-red-400 px-4 py-3 rounded-xl text-sm animate-slide-in-right max-w-sm">
-              {error}
-            </div>
-          )}
-
+        <MainLayout connected={connected} error={error}>
           <Routes>
             <Route
               path="/"
@@ -76,15 +96,17 @@ export default function App() {
             <Route
               path="/command"
               element={
-                <CommandCentre
-                  vehicles={vehicles}
-                  emergency={emergency}
-                  timeline={timeline}
-                  connected={connected}
-                  onStartEmergency={startEmergency}
-                  onCancelEmergency={cancelEmergency}
-                  onCompleteEmergency={completeEmergency}
-                />
+                <ErrorBoundary fallbackTitle="Emergency Command Centre — Display Recovery">
+                  <CommandCentre
+                    vehicles={vehicles}
+                    emergency={emergency}
+                    timeline={timeline}
+                    connected={connected}
+                    onStartEmergency={startEmergency}
+                    onCancelEmergency={cancelEmergency}
+                    onCompleteEmergency={completeEmergency}
+                  />
+                </ErrorBoundary>
               }
             />
             <Route
@@ -101,6 +123,10 @@ export default function App() {
                 />
               }
             />
+            {/* ─── Dedicated Car Dashboard Routes ─── */}
+            <Route path="/car" element={<CarDashboardPage />} />
+            <Route path="/car-dashboard" element={<CarDashboardPage />} />
+
             <Route
               path="/report"
               element={
@@ -142,7 +168,7 @@ export default function App() {
               }
             />
           </Routes>
-        </div>
+        </MainLayout>
       </BrowserRouter>
     </AuthProvider>
   );

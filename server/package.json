@@ -7,7 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx test/geofence-edge-cases.test.ts"
+    "test": "tsx test/geofence-edge-cases.test.ts",
+    "test:nearest": "tsx test/nearest-hospital-auto.test.ts",
+    "test:all": "tsx test/geofence-edge-cases.test.ts && tsx test/nearest-hospital-auto.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

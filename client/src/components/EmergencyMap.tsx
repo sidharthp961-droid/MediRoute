@@ -1,3 +1,4 @@
+import 'leaflet/dist/leaflet.css';
 // ─── Emergency Map component with Kerala Road Routing ───
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -7,7 +8,9 @@ import {
   Circle,
   Popup,
   Polyline,
+  Tooltip,
   useMap,
+  useMapEvents,
 } from 'react-leaflet';
 import L from 'leaflet';
 import {
@@ -17,6 +20,7 @@ import {
   Clock,
   Compass,
   Layers,
+  MapPin,
 } from 'lucide-react';
 import type { Vehicle, EmergencySession, Coordinates } from '@/types';
 import type { RoutingResult } from '@/lib/routing';
@@ -51,35 +55,97 @@ function createIcon(color: string, pulse = false, symbol?: string): L.DivIcon {
   });
 }
 
-function createHospitalIcon(isDestination = false): L.DivIcon {
-  const bg = isDestination ? '#5DE4D0' : '#12363A';
+function createHospitalIcon(
+  isDestination = false,
+  rank?: number,
+  name?: string,
+  distanceText?: string,
+): L.DivIcon {
+  const bg = isDestination ? '#5DE4D0' : '#0B272D';
   const text = isDestination ? '#071B20' : '#5DE4D0';
-  const border = isDestination ? '#F0FAF8' : '#5DE4D0';
+  const border = isDestination ? '#F0FAF8' : rank === 1 ? '#F0B85A' : rank === 2 ? '#5DE4D0' : '#38BDF8';
+  const badgeBg = rank === 1 ? '#F0B85A' : rank === 2 ? '#5DE4D0' : '#38BDF8';
+  const badgeText = '#071B20';
+
+  const badgeHtml = rank != null ? `
+    <span style="
+      background:${badgeBg};
+      color:${badgeText};
+      font-size:10px;
+      font-weight:900;
+      padding:1px 5px;
+      border-radius:4px;
+      letter-spacing:0.5px;
+      flex-shrink:0;
+    ">#${rank}</span>
+  ` : isDestination ? `
+    <span style="
+      background:#5DE4D0;
+      color:#071B20;
+      font-size:9px;
+      font-weight:900;
+      padding:1px 5px;
+      border-radius:4px;
+      letter-spacing:0.5px;
+      flex-shrink:0;
+    ">DEST</span>
+  ` : '';
+
+  const labelHtml = (name || distanceText) ? `
+    <div style="
+      position:absolute;
+      bottom:100%;
+      left:50%;
+      transform:translateX(-50%);
+      margin-bottom:6px;
+      background:rgba(7, 27, 32, 0.96);
+      border:1.5px solid ${border};
+      color:#F0FAF8;
+      padding:3px 8px;
+      border-radius:8px;
+      font-size:11px;
+      font-weight:700;
+      box-shadow:0 6px 20px rgba(0,0,0,0.85);
+      white-space:nowrap;
+      pointer-events:none;
+      display:flex;
+      align-items:center;
+      gap:5px;
+      z-index:999;
+    ">
+      ${badgeHtml}
+      <span style="max-width:180px;overflow:hidden;text-overflow:ellipsis;">${name || ''}</span>
+      ${distanceText ? `<span style="color:#5DE4D0;font-family:ui-monospace,monospace;font-size:10px;font-weight:800;">${distanceText}</span>` : ''}
+    </div>
+  ` : '';
+
   return L.divIcon({
-    className: 'hospital-marker',
+    className: 'hospital-marker-icon',
     html: `
-      <div style="position:relative;display:flex;align-items:center;justify-content:center;">
+      <div style="position:relative;display:flex;align-items:center;justify-content:center;width:40px;height:40px;">
+        ${labelHtml}
         ${
           isDestination
-            ? `<div style="position:absolute;width:44px;height:44px;border-radius:12px;background:#5DE4D033;animation:pulse-ring 2s ease-out infinite;"></div>`
+            ? '<div style="position:absolute;width:48px;height:48px;border-radius:14px;background:#5DE4D044;animation:pulse-ring 1.8s ease-out infinite;"></div>'
             : ''
         }
         <div style="
-          width:32px;height:32px;border-radius:8px;
+          width:36px;height:36px;border-radius:10px;
           background:${bg};
-          border:2px solid ${border};
-          box-shadow:0 3px 12px rgba(0,0,0,0.6);
+          border:2.5px solid ${border};
+          box-shadow:0 4px 16px rgba(0,0,0,0.7), 0 0 10px ${border}66;
           display:flex;align-items:center;justify-content:center;
-          font-weight:800;font-size:15px;color:${text};
-          font-family:ui-sans-serif, system-ui, sans-serif;
+          font-weight:900;font-size:16px;color:${text};
+          font-family:ui-sans-serif, system-ui, -apple-system, sans-serif;
+          cursor:pointer;
         ">
           H
         </div>
       </div>
     `,
-    iconSize: [44, 44],
-    iconAnchor: [22, 22],
-    popupAnchor: [0, -22],
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+    popupAnchor: [0, -26],
   });
 }
 
@@ -109,6 +175,47 @@ const demoVehicleIcon = L.divIcon({
   popupAnchor: [0, -22],
 });
 
+// Start Location Marker Icon (Emerald Green Pin)
+const startLocationIcon = L.divIcon({
+  className: 'start-location-marker',
+  html: `
+    <div style="position:relative;display:flex;align-items:center;justify-content:center;">
+      <div style="position:absolute;width:44px;height:44px;border-radius:50%;background:#10B98144;animation:pulse-ring 1.8s ease-out infinite;"></div>
+      <div style="
+        width:34px;height:34px;border-radius:50%;
+        background:#071B20;
+        border:3px solid #10B981;
+        box-shadow:0 0 16px rgba(16, 185, 129, 0.7);
+        display:flex;align-items:center;justify-content:center;
+        font-size:16px;
+      ">
+        📍
+      </div>
+    </div>
+  `,
+  iconSize: [44, 44],
+  iconAnchor: [22, 22],
+  popupAnchor: [0, -22],
+});
+
+// Map click listener hook
+function MapClickHandler({
+  onMapClick,
+  enabled,
+}: {
+  onMapClick?: (coords: Coordinates) => void;
+  enabled: boolean;
+}) {
+  useMapEvents({
+    click(e) {
+      if (enabled && onMapClick) {
+        onMapClick({ lat: e.latlng.lat, lng: e.latlng.lng });
+      }
+    },
+  });
+  return null;
+}
+
 // Fit map bounds to route or re-center
 function MapBoundsUpdater({
   routeCoordinates,
@@ -116,7 +223,7 @@ function MapBoundsUpdater({
   disabled = false,
 }: {
   routeCoordinates?: [number, number][];
-  center: Coordinates;
+  center?: Coordinates | null;
   disabled?: boolean;
 }) {
   const map = useMap();
@@ -130,10 +237,10 @@ function MapBoundsUpdater({
       } catch (err) {
         console.warn('[Map] Could not fit bounds:', err);
       }
-    } else if (center) {
+    } else if (center && typeof center.lat === 'number' && typeof center.lng === 'number' && !isNaN(center.lat) && !isNaN(center.lng)) {
       map.setView([center.lat, center.lng], 14, { animate: true });
     }
-  }, [routeCoordinates, center.lat, center.lng, disabled, map]);
+  }, [routeCoordinates, center?.lat, center?.lng, disabled, map]);
 
   return null;
 }
@@ -151,7 +258,7 @@ function NavigationCameraController({
   const map = useMap();
 
   useEffect(() => {
-    if (!isNavigating || !vehicleCoord) return;
+    if (!isNavigating || !vehicleCoord || typeof vehicleCoord.lat !== "number" || typeof vehicleCoord.lng !== "number" || isNaN(vehicleCoord.lat) || isNaN(vehicleCoord.lng)) return;
 
     // Offset camera slightly north/forward (~280m at zoom 16) so vehicle sits at lower-middle of viewport
     const offsetLat = vehicleCoord.lat + 0.0025;
@@ -172,6 +279,10 @@ export interface HospitalMarkerInfo {
   town: string;
   coords: Coordinates;
   isDestination?: boolean;
+  distanceKm?: string;
+  distanceMetres?: number;
+  rank?: number;
+  isNearby?: boolean;
   alternateName?: string;
   category?: string;
   address?: string;
@@ -194,6 +305,10 @@ interface EmergencyMapProps {
   isNavigationActive?: boolean;
   traversedRouteCoordinates?: [number, number][];
   remainingRouteCoordinates?: [number, number][];
+  startLocationCoord?: Coordinates | null;
+  startLocationLabel?: string;
+  isPickingLocation?: boolean;
+  onMapClick?: (coords: Coordinates) => void;
 }
 
 export function EmergencyMap({
@@ -210,8 +325,17 @@ export function EmergencyMap({
   isNavigationActive = false,
   traversedRouteCoordinates = [],
   remainingRouteCoordinates = [],
+  startLocationCoord = null,
+  startLocationLabel,
+  isPickingLocation = false,
+  onMapClick,
 }: EmergencyMapProps) {
-  const defaultCenter: Coordinates = center || emergency?.origin || KERALA_CENTER;
+  const defaultCenter: Coordinates =
+    center && typeof center.lat === 'number' && typeof center.lng === 'number' && !isNaN(center.lat) && !isNaN(center.lng)
+      ? center
+      : emergency?.origin && typeof emergency.origin.lat === 'number' && typeof emergency.origin.lng === 'number' && !isNaN(emergency.origin.lat) && !isNaN(emergency.origin.lng)
+      ? emergency.origin
+      : KERALA_CENTER;
 
   const [selectedRouteIdx, setSelectedRouteIdx] = useState(
     routeResult?.selectedRouteIndex || 0,
@@ -258,6 +382,12 @@ export function EmergencyMap({
           }}
         />
 
+        {/* Map Click Handler for Starting Location Selection */}
+        <MapClickHandler
+          onMapClick={onMapClick}
+          enabled={Boolean(isPickingLocation || onMapClick)}
+        />
+
         {/* Dynamic Bounds / Center Updater (active when not in camera navigation mode) */}
         <MapBoundsUpdater
           routeCoordinates={activeRoute?.coordinates}
@@ -275,7 +405,7 @@ export function EmergencyMap({
         )}
 
         {/* Emergency 1 km proximity radius circle */}
-        {emergency?.status === 'active' && (
+        {emergency?.status === 'active' && emergency?.origin && typeof emergency.origin.lat === 'number' && typeof emergency.origin.lng === 'number' && !isNaN(emergency.origin.lat) && !isNaN(emergency.origin.lng) && (
           <Circle
             center={[emergency.origin.lat, emergency.origin.lng]}
             radius={emergency.radiusMetres}
@@ -414,15 +544,31 @@ export function EmergencyMap({
           )
         )}
 
-        {/* Hospital Markers */}
-        {hospitalMarkers.map((hospital, idx) => (
+        {/* Hospital Markers: Nearest 3 facilities and active destination */}
+        {hospitalMarkers
+          .filter(
+            (hospital) =>
+              hospital?.coords &&
+              typeof hospital.coords.lat === 'number' &&
+              typeof hospital.coords.lng === 'number' &&
+              !isNaN(hospital.coords.lat) &&
+              !isNaN(hospital.coords.lng) &&
+              isFinite(hospital.coords.lat) &&
+              isFinite(hospital.coords.lng) &&
+              hospital.coords.lat >= -90 &&
+              hospital.coords.lat <= 90 &&
+              hospital.coords.lng >= -180 &&
+              hospital.coords.lng <= 180,
+          )
+          .map((hospital, idx) => (
           <Marker
-            key={`hosp-${idx}-${hospital.town}`}
+            key={`hosp-${hospital.name}-${hospital.coords.lat.toFixed(4)}-${hospital.coords.lng.toFixed(4)}`}
             position={[hospital.coords.lat, hospital.coords.lng]}
-            icon={createHospitalIcon(hospital.isDestination)}
+            icon={createHospitalIcon(hospital.isDestination, hospital.rank, hospital.name, hospital.distanceKm)}
+            zIndexOffset={hospital.isDestination ? 1600 : 1500 - idx * 10}
           >
             <Popup>
-              <div className="text-sm min-w-[190px]">
+              <div className="text-sm min-w-[210px]">
                 <div className="flex items-center gap-1.5 text-accent-teal font-semibold text-xs uppercase tracking-wider">
                   <span>🏥 Healthcare Facility</span>
                   {hospital.isDestination && (
@@ -430,10 +576,20 @@ export function EmergencyMap({
                       Active Destination
                     </span>
                   )}
+                  {hospital.rank != null && (
+                    <span className="bg-alert-amber/20 text-alert-amber px-1.5 py-0.5 rounded text-[10px] font-mono font-bold">
+                      #{hospital.rank} Nearest
+                    </span>
+                  )}
                 </div>
                 <div className="font-bold text-primary-text mt-1 text-sm">
                   {hospital.name}
                 </div>
+                {hospital.distanceKm && (
+                  <div className="text-accent-teal text-xs font-semibold mt-1 flex items-center gap-1 bg-accent-teal/10 px-2 py-0.5 rounded border border-accent-teal/30">
+                    <span>📍</span> {hospital.distanceKm} straight-line distance
+                  </div>
+                )}
                 {hospital.alternateName && (
                   <div className="text-muted-text text-xs italic mt-0.5">
                     {hospital.alternateName}
@@ -508,7 +664,14 @@ export function EmergencyMap({
 
         {/* Vehicle Markers */}
         {vehicles
-          .filter((v) => v.location)
+          .filter(
+            (v) =>
+              v.location &&
+              typeof v.location.lat === 'number' &&
+              typeof v.location.lng === 'number' &&
+              !isNaN(v.location.lat) &&
+              !isNaN(v.location.lng),
+          )
           .map((v) => {
             const isEmergencyVehicle =
               emergency?.vehicleId === v.id || v.role === 'emergency';
@@ -553,7 +716,48 @@ export function EmergencyMap({
               </Marker>
             );
           })}
+
+        {/* User-Selected Starting Location Marker */}
+        {startLocationCoord &&
+          typeof startLocationCoord.lat === 'number' &&
+          typeof startLocationCoord.lng === 'number' &&
+          !isNaN(startLocationCoord.lat) &&
+          !isNaN(startLocationCoord.lng) && (
+          <Marker
+            position={[startLocationCoord.lat, startLocationCoord.lng]}
+            icon={startLocationIcon}
+            zIndexOffset={900}
+          >
+            <Popup>
+              <div className="text-sm min-w-[170px]">
+                <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>Selected Starting Point</span>
+                </div>
+                <div className="font-semibold text-primary-text text-sm mt-1">
+                  {startLocationLabel || 'Custom Starting Location'}
+                </div>
+                <div className="text-[11px] text-muted-text/80 font-mono mt-0.5">
+                  {startLocationCoord.lat.toFixed(5)}°N, {startLocationCoord.lng.toFixed(5)}°E
+                </div>
+                <div className="text-[10px] text-emerald-400/80 mt-1.5 border-t border-petrol/60 pt-1">
+                  Anchor for emergency dispatch & nearest hospital routing.
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
       </MapContainer>
+
+{/* Map Picking Crosshair Hint Banner */}
+      {isPickingLocation && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
+          <div className="bg-emerald-600/95 backdrop-blur-md text-white font-bold text-xs px-4 py-2 rounded-full shadow-2xl flex items-center gap-2 border border-emerald-300/40 animate-pulse">
+            <MapPin className="w-4 h-4 text-emerald-200" />
+            <span>Click anywhere on the map to set starting point</span>
+          </div>
+        </div>
+      )}
 
       {/* Floating Route Information & Quality Overlay */}
       {routeResult && showRouteControls && activeRoute && (

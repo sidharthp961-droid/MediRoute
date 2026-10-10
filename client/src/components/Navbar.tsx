@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { StatusDot } from './ui';
 import { useAuth } from '@/lib/authContext';
-import { LogIn, LogOut, UserCheck } from 'lucide-react';
+import { LogIn, LogOut, UserCheck, Gauge } from 'lucide-react';
 
 interface NavbarProps {
   connected: boolean;
@@ -26,6 +26,7 @@ export function Navbar({ connected }: NavbarProps) {
     { to: '/', label: 'Home', icon: Activity },
     { to: '/command', label: 'Command Centre', icon: Radio },
     { to: '/driver', label: 'Driver', icon: Car },
+    { to: '/car', label: 'Car HUD', icon: Gauge },
     { to: '/report', label: 'Report Emergency', icon: ShieldAlert },
     { to: '/moderator', label: 'Moderator', icon: ShieldCheck },
     { to: '/monitor', label: 'Monitor', icon: Monitor },

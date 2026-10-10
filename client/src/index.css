@@ -119,3 +119,23 @@
   border: 1px solid rgba(18, 54, 58, 0.6);
   border-radius: 16px;
 }
+
+/* ─── Hospital Marker Tooltip for Leaflet ─── */
+.hospital-marker-tooltip {
+  background: rgba(7, 27, 32, 0.95) !important;
+  color: var(--primary-text) !important;
+  border: 1px solid rgba(93, 228, 208, 0.5) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6) !important;
+  padding: 3px 8px !important;
+  font-family: inherit !important;
+}
+
+.hospital-marker-tooltip::before {
+  border-top-color: rgba(93, 228, 208, 0.5) !important;
+}
+
+.hospital-marker-icon {
+  background: transparent !important;
+  border: none !important;
+}

@@ -174,6 +174,7 @@ export const KERALA_HOSPITALS: HospitalDestination[] = [
 ];
 
 import { haversineDistance } from './utils';
+export { haversineDistance };
 
 /**
  * Filter hospitals by search term matching name, town, district, or category.
@@ -192,7 +193,7 @@ export function searchHospitals(query: string): HospitalDestination[] {
 }
 
 /**
- * Finds the closest verified hospital to the given coordinates.
+ * Finds the closest verified hospital to the given coordinates by straight-line distance.
  */
 export function findNearestHospital(
   origin: Coordinates,
@@ -215,3 +216,296 @@ export function findNearestHospital(
   if (!nearest) return null;
   return { hospital: nearest, distanceMetres: minDistance };
 }
+
+export interface RankedHospitalDistance {
+  hospital: HospitalDestination;
+  distanceMetres: number;
+  distanceKm: string;
+}
+
+/**
+ * Calculates straight-line distances locally from origin to all verified Kerala hospitals
+ * using the Haversine formula and returns the top closest facilities sorted ascending.
+ * Safely handles invalid coordinates and missing dataset without calling any network APIs.
+ */
+export function getNearestHospitals(
+  origin: Coordinates | null | undefined,
+  limit = 3,
+): RankedHospitalDistance[] {
+  if (
+    !origin ||
+    typeof origin.lat !== 'number' ||
+    typeof origin.lng !== 'number' ||
+    isNaN(origin.lat) ||
+    isNaN(origin.lng) ||
+    !isFinite(origin.lat) ||
+    !isFinite(origin.lng) ||
+    origin.lat < -90 ||
+    origin.lat > 90 ||
+    origin.lng < -180 ||
+    origin.lng > 180 ||
+    !Array.isArray(KERALA_HOSPITALS) ||
+    KERALA_HOSPITALS.length === 0
+  ) {
+    return [];
+  }
+
+  const validHospitals = KERALA_HOSPITALS.filter(
+    (h) =>
+      h &&
+      h.coords &&
+      typeof h.coords.lat === 'number' &&
+      typeof h.coords.lng === 'number' &&
+      !isNaN(h.coords.lat) &&
+      !isNaN(h.coords.lng) &&
+      isFinite(h.coords.lat) &&
+      isFinite(h.coords.lng) &&
+      h.coords.lat >= -90 &&
+      h.coords.lat <= 90 &&
+      h.coords.lng >= -180 &&
+      h.coords.lng <= 180,
+  );
+
+  const ranked: RankedHospitalDistance[] = validHospitals
+    .map((hospital) => {
+      const distanceMetres = haversineDistance(origin, hospital.coords);
+      const km = (distanceMetres / 1000).toFixed(1);
+      return {
+        hospital,
+        distanceMetres,
+        distanceKm: km + ' km',
+      };
+    })
+    .sort((a, b) => a.distanceMetres - b.distanceMetres);
+
+  return typeof limit === 'number' && limit > 0 ? ranked.slice(0, limit) : ranked;
+}
+
+import { fetchRoadRoute, RoutingResult } from './routing';
+
+export interface NearestHospitalRoadResult {
+  hospital: HospitalDestination;
+  routingResult: RoutingResult;
+  roadDistanceMetres: number;
+  roadDistanceKm: string;
+  roadDurationMinutes: string;
+  straightLineMetres: number;
+  comparisonCandidatesCount: number;
+  isRoadRouteComparison: boolean;
+}
+
+/**
+ * Checks whether two coordinates represent a significant movement exceeding threshold (metres).
+ * Prevents redundant OSRM recalculations from GPS jitter / slight fluctuations.
+ */
+export function hasSignificantLocationChange(
+  coordA: Coordinates | null | undefined,
+  coordB: Coordinates | null | undefined,
+  thresholdMetres = 150,
+): boolean {
+  if (!coordA || !coordB) return true;
+  if (
+    typeof coordA.lat !== 'number' ||
+    typeof coordA.lng !== 'number' ||
+    typeof coordB.lat !== 'number' ||
+    typeof coordB.lng !== 'number' ||
+    isNaN(coordA.lat) ||
+    isNaN(coordA.lng) ||
+    isNaN(coordB.lat) ||
+    isNaN(coordB.lng)
+  ) {
+    return true;
+  }
+  const d = haversineDistance(coordA, coordB);
+  return d > thresholdMetres;
+}
+
+export interface HospitalRecommendation {
+  hospital: HospitalDestination;
+  routingResult: RoutingResult;
+  roadDistanceMetres: number;
+  roadDistanceKm: string;
+  roadDurationMinutes: string;
+  savingsMetres: number;
+  savingsKm: string;
+}
+
+/**
+ * Checks if a closer hospital exists along vehicle location during active emergency.
+ * Used to present a recommendation confirmation without silently changing locked destination.
+ */
+export async function checkCloserHospitalRecommendation(
+  origin: Coordinates,
+  currentHospitalId: string,
+  minSavingsMetres = 1000,
+): Promise<HospitalRecommendation | null> {
+  if (!origin || !currentHospitalId) return null;
+
+  const result = await findNearestHospitalByRoadRoute(origin, { candidateCount: 3 });
+  if (!result || result.hospital.id === currentHospitalId) {
+    return null;
+  }
+
+  // Calculate route or distance to current hospital for comparison
+  const currentHospital = KERALA_HOSPITALS.find((h) => h.id === currentHospitalId);
+  if (!currentHospital) return null;
+
+  let currentRoadMetres = Infinity;
+  try {
+    const curRoute = await fetchRoadRoute(origin, currentHospital.coords);
+    if (curRoute.routes[0] && curRoute.routes[0].distanceMetres > 0) {
+      currentRoadMetres = curRoute.routes[0].distanceMetres;
+    }
+  } catch {
+    currentRoadMetres = haversineDistance(origin, currentHospital.coords);
+  }
+
+  const savingsMetres = currentRoadMetres - result.roadDistanceMetres;
+  if (savingsMetres >= minSavingsMetres) {
+    return {
+      hospital: result.hospital,
+      routingResult: result.routingResult,
+      roadDistanceMetres: result.roadDistanceMetres,
+      roadDistanceKm: result.roadDistanceKm,
+      roadDurationMinutes: result.roadDurationMinutes,
+      savingsMetres,
+      savingsKm: `${(savingsMetres / 1000).toFixed(1)} km`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Finds the nearest verified hospital from a starting location by comparing
+ * actual OSRM road routes across top closest candidate facilities.
+ * Falls back safely to straight-line distance if OSRM is unreachable.
+ */
+export async function findNearestHospitalByRoadRoute(
+  origin: Coordinates,
+  options?: {
+    candidateCount?: number;
+    excludeId?: string;
+  },
+): Promise<NearestHospitalRoadResult | null> {
+  if (
+    !origin ||
+    typeof origin.lat !== 'number' ||
+    typeof origin.lng !== 'number' ||
+    isNaN(origin.lat) ||
+    isNaN(origin.lng) ||
+    !isFinite(origin.lat) ||
+    !isFinite(origin.lng) ||
+    origin.lat < -90 ||
+    origin.lat > 90 ||
+    origin.lng < -180 ||
+    origin.lng > 180 ||
+    !KERALA_HOSPITALS.length
+  ) {
+    return null;
+  }
+
+  const candidateCount = Math.max(1, Math.min(options?.candidateCount || 3, KERALA_HOSPITALS.length));
+
+  // 1. Calculate straight-line distance to all hospitals
+  const ranked = KERALA_HOSPITALS
+    .filter((h) => !options?.excludeId || h.id !== options.excludeId)
+    .map((h) => ({
+      hospital: h,
+      straightLineMetres: haversineDistance(origin, h.coords),
+    }))
+    .sort((a, b) => a.straightLineMetres - b.straightLineMetres);
+
+  if (ranked.length === 0) return null;
+
+  // 2. Take top candidates for road-route comparison
+  const candidates = ranked.slice(0, candidateCount);
+
+  // 3. Attempt OSRM road route fetching for each candidate
+  let bestCandidate: {
+    hospital: HospitalDestination;
+    routingResult: RoutingResult;
+    roadDistanceMetres: number;
+    straightLineMetres: number;
+  } | null = null;
+
+  for (const cand of candidates) {
+    try {
+      const routeRes = await fetchRoadRoute(origin, cand.hospital.coords, {
+        destinationLabel: cand.hospital.name,
+      });
+
+      const primary = routeRes.routes[0];
+      if (primary && primary.distanceMetres > 0) {
+        if (!bestCandidate || primary.distanceMetres < bestCandidate.roadDistanceMetres) {
+          bestCandidate = {
+            hospital: cand.hospital,
+            routingResult: routeRes,
+            roadDistanceMetres: primary.distanceMetres,
+            straightLineMetres: cand.straightLineMetres,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn(`[Routing] Could not fetch road route to ${cand.hospital.name}:`, err);
+    }
+  }
+
+  // 4. If road route comparison succeeded, return best road candidate
+  if (bestCandidate) {
+    const primary = bestCandidate.routingResult.routes[0];
+    return {
+      hospital: bestCandidate.hospital,
+      routingResult: bestCandidate.routingResult,
+      roadDistanceMetres: bestCandidate.roadDistanceMetres,
+      roadDistanceKm: primary.distanceKm,
+      roadDurationMinutes: primary.durationMinutes,
+      straightLineMetres: bestCandidate.straightLineMetres,
+      comparisonCandidatesCount: candidates.length,
+      isRoadRouteComparison: true,
+    };
+  }
+
+  // 5. Fallback: Straight-line nearest hospital if OSRM is offline
+  const nearestStraight = ranked[0];
+  const straightKm = (nearestStraight.straightLineMetres / 1000).toFixed(1);
+
+  // Create minimal fallback routing result
+  const fallbackRoute: RoutingResult = {
+    origin,
+    destination: nearestStraight.hospital.coords,
+    destinationLabel: nearestStraight.hospital.name,
+    routes: [
+      {
+        id: 'fallback-straight-line',
+        index: 0,
+        distanceMetres: nearestStraight.straightLineMetres,
+        distanceKm: `~${straightKm} km (straight-line)`,
+        durationSeconds: Math.round((nearestStraight.straightLineMetres / 1000 / 40) * 3600), // ~40km/h est
+        durationMinutes: `~${Math.round((nearestStraight.straightLineMetres / 1000 / 40) * 60)} mins`,
+        summary: 'Direct straight-line path (OSRM road service offline)',
+        coordinates: [
+          [origin.lat, origin.lng],
+          [nearestStraight.hospital.coords.lat, nearestStraight.hospital.coords.lng],
+        ],
+        isPrimary: true,
+      },
+    ],
+    selectedRouteIndex: 0,
+    fetchedAt: Date.now(),
+    provider: 'OSRM (OpenStreetMap Roads)',
+    disclaimer: 'Straight-line fallback: OSRM road routing service could not be reached. Actual road distance will be longer.',
+  };
+
+  return {
+    hospital: nearestStraight.hospital,
+    routingResult: fallbackRoute,
+    roadDistanceMetres: nearestStraight.straightLineMetres,
+    roadDistanceKm: `~${straightKm} km`,
+    roadDurationMinutes: `~${Math.round((nearestStraight.straightLineMetres / 1000 / 40) * 60)} mins`,
+    straightLineMetres: nearestStraight.straightLineMetres,
+    comparisonCandidatesCount: candidates.length,
+    isRoadRouteComparison: false,
+  };
+}
+

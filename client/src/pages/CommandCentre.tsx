@@ -1,5 +1,5 @@
 // ─── Emergency Command Centre — Kerala Priority Corridors & Google Maps Navigation Mode ───
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Radio,
   AlertTriangle,
@@ -51,7 +51,18 @@ import {
   KERALA_HOSPITALS,
   HospitalDestination,
   findNearestHospital,
+  findNearestHospitalByRoadRoute,
+  getNearestHospitals,
+  haversineDistance,
+  hasSignificantLocationChange,
+  checkCloserHospitalRecommendation,
+  HospitalRecommendation,
 } from '@/lib/hospitals';
+import {
+  StartingLocationSelector,
+  StartingLocation,
+  GpsStatus,
+} from '@/components/StartingLocationSelector';
 import { useJourneySimulation } from '@/hooks/useJourneySimulation';
 
 interface CommandCentreProps {
@@ -80,6 +91,24 @@ export function CommandCentre({
   const [isNavigating, setIsNavigating] = useState(false);
   const [navMode, setNavMode] = useState<'demo' | 'live'>('demo');
   const [showDestinationModal, setShowDestinationModal] = useState(false);
+
+  // Dedicated Starting Location State (Phase 2 & 3)
+  const [startingLocation, setStartingLocation] = useState<StartingLocation>({
+    coords: DEMO_COORDS.emergency,
+    label: 'District Hospital Thodupuzha (Emergency Hub)',
+    source: 'preset',
+  });
+  const [isPickingOnMap, setIsPickingOnMap] = useState(false);
+  const [isSearchingHospitals, setIsSearchingHospitals] = useState(false);
+  const [gpsStatus, setGpsStatus] = useState<GpsStatus>('idle');
+  const [gpsErrorMessage, setGpsErrorMessage] = useState<string | null>(null);
+  const [isManualHospitalSelection, setIsManualHospitalSelection] = useState(false);
+  const [closerRecommendation, setCloserRecommendation] = useState<HospitalRecommendation | null>(null);
+  const [dismissedRecommendationHospitalId, setDismissedRecommendationHospitalId] = useState<string | null>(null);
+
+  const lastResolvedCoordsRef = useRef<Coordinates | null>(null);
+  const lastRecCheckCoordsRef = useRef<Coordinates | null>(null);
+  const hasMountedGpsRef = useRef(false);
 
   // Priority corridor selection (default: Thodupuzha → Ernakulam)
   const [selectedCorridorId, setSelectedCorridorId] = useState<string>('thodupuzha-ernakulam');
@@ -149,10 +178,197 @@ export function CommandCentre({
     [],
   );
 
+  // Automatically find nearest hospital by comparing actual road routes (Phase 3)
+  const resolveNearestHospitalForOrigin = useCallback(
+    async (origin: Coordinates, originLabel?: string, force = false) => {
+      // Jitter Deadband: suppress redundant OSRM recalculations if movement < 150m
+      if (
+        !force &&
+        !hasSignificantLocationChange(lastResolvedCoordsRef.current, origin, 150) &&
+        selectedHospital
+      ) {
+        return;
+      }
+
+      lastResolvedCoordsRef.current = origin;
+      setIsSearchingHospitals(true);
+      setRouteError(null);
+      try {
+        const result = await findNearestHospitalByRoadRoute(origin, { candidateCount: 3 });
+        if (result) {
+          if (isManualHospitalSelection && selectedHospital) {
+            // Keep user manual hospital selection, only update route from new starting origin
+            loadRoute(origin, selectedHospital.coords, {
+              originLabel: originLabel || 'Starting Location',
+              destinationLabel: selectedHospital.name,
+            });
+          } else {
+            setSelectedHospital(result.hospital);
+            setRouteResult(result.routingResult);
+          }
+        } else {
+          setRouteError(
+            'No verified hospital facility could be located near incident coordinates. Please manually select a destination from the directory.',
+          );
+        }
+      } catch (err: any) {
+        console.warn('[NearestHospital] Error in road-route comparison:', err);
+        setRouteError('Error calculating road routes to hospitals. Please pick a destination manually.');
+      } finally {
+        setIsSearchingHospitals(false);
+      }
+    },
+    [isManualHospitalSelection, selectedHospital, loadRoute],
+  );
+
+  // Acquire live device GPS with high accuracy and clear error reporting
+  const acquireLiveGPS = useCallback(
+    (onComplete?: (success: boolean) => void) => {
+      setGpsErrorMessage(null);
+
+      if (typeof window === 'undefined' || !navigator.geolocation) {
+        const msg = 'Geolocation is not supported by your browser. Please select a starting point on the map or search.';
+        setGpsStatus('unavailable');
+        setGpsErrorMessage(msg);
+        onComplete?.(false);
+        return;
+      }
+
+      setGpsStatus('acquiring');
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude, accuracy } = position.coords;
+          setGpsStatus('granted');
+          setGpsErrorMessage(null);
+
+          const newLoc: StartingLocation = {
+            coords: { lat: latitude, lng: longitude },
+            label: `Current GPS Location (±${Math.round(accuracy)}m)`,
+            source: 'gps',
+            accuracy,
+          };
+
+          setStartingLocation(newLoc);
+          setIsManualHospitalSelection(false);
+
+          if (hasSignificantLocationChange(lastResolvedCoordsRef.current, newLoc.coords, 150)) {
+            lastResolvedCoordsRef.current = newLoc.coords;
+            resolveNearestHospitalForOrigin(newLoc.coords, newLoc.label, true);
+          }
+
+          onComplete?.(true);
+        },
+        (error) => {
+          let status: GpsStatus = 'unavailable';
+          let msg = 'Unable to determine GPS location.';
+
+          if (error.code === error.PERMISSION_DENIED) {
+            status = 'denied';
+            msg = 'GPS permission denied. Please enable location permissions or pick a point on the map.';
+          } else if (error.code === error.POSITION_UNAVAILABLE) {
+            status = 'unavailable';
+            msg = 'GPS location is currently unavailable. Using preset hub until a point is chosen.';
+          } else if (error.code === error.TIMEOUT) {
+            status = 'timeout';
+            msg = 'GPS request timed out. Please retry or choose a location on the map.';
+          }
+
+          setGpsStatus(status);
+          setGpsErrorMessage(msg);
+          onComplete?.(false);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 30000,
+        },
+      );
+    },
+    [resolveNearestHospitalForOrigin],
+  );
+
+  // Automatic live GPS detection on startup
+  useEffect(() => {
+    if (hasMountedGpsRef.current) return;
+    hasMountedGpsRef.current = true;
+
+    acquireLiveGPS((success) => {
+      if (!success) {
+        // If GPS is unavailable/denied, resolve nearest hospital for the default preset
+        // so the map and destination are immediately populated and ready,
+        // without misrepresenting preset coordinates as real GPS
+        lastResolvedCoordsRef.current = startingLocation.coords;
+        resolveNearestHospitalForOrigin(startingLocation.coords, startingLocation.label, true);
+      }
+    });
+  }, [acquireLiveGPS, resolveNearestHospitalForOrigin, startingLocation.coords, startingLocation.label]);
+
+  // Map Click Handler for Starting Location Selection (Phase 2 Option 2)
+  const handleMapClick = useCallback(
+    (coords: Coordinates) => {
+      if (isPickingOnMap) {
+        setIsPickingOnMap(false);
+        setIsManualHospitalSelection(false);
+        const updated: StartingLocation = {
+          coords,
+          label: `Map Point (${coords.lat.toFixed(4)}°N, ${coords.lng.toFixed(4)}°E)`,
+          source: 'map',
+        };
+        setStartingLocation(updated);
+        lastResolvedCoordsRef.current = coords;
+        resolveNearestHospitalForOrigin(coords, updated.label, true);
+      }
+    },
+    [isPickingOnMap, resolveNearestHospitalForOrigin],
+  );
+
+  const handleSelectStartingLocation = useCallback(
+    (loc: StartingLocation) => {
+      setIsManualHospitalSelection(false);
+      setStartingLocation(loc);
+      setIsPickingOnMap(false);
+      lastResolvedCoordsRef.current = loc.coords;
+      resolveNearestHospitalForOrigin(loc.coords, loc.label, true);
+    },
+    [resolveNearestHospitalForOrigin],
+  );
+
+  const handleResetToPreset = useCallback(() => {
+    setIsManualHospitalSelection(false);
+    const preset: StartingLocation = {
+      coords: DEMO_COORDS.emergency,
+      label: 'District Hospital Thodupuzha (Emergency Hub)',
+      source: 'preset',
+    };
+    setStartingLocation(preset);
+    setIsPickingOnMap(false);
+    lastResolvedCoordsRef.current = preset.coords;
+    resolveNearestHospitalForOrigin(preset.coords, preset.label, true);
+  }, [resolveNearestHospitalForOrigin]);
+
   // 1. AUTOMATIC NEAREST HOSPITAL RESOLUTION ON EMERGENCY ACTIVATION
   useEffect(() => {
-    if (emergency?.status === 'active' && emergency.origin) {
-      // If destination already explicitly chosen, use it
+    if (emergency?.status === 'active' && emergency?.origin && typeof emergency.origin.lat === 'number' && typeof emergency.origin.lng === 'number') {
+      // Sync starting location with emergency origin
+      setStartingLocation((prev) => {
+        if (
+          prev?.coords &&
+          typeof prev.coords.lat === 'number' &&
+          typeof prev.coords.lng === 'number' &&
+          Math.abs(prev.coords.lat - emergency.origin.lat) < 0.0001 &&
+          Math.abs(prev.coords.lng - emergency.origin.lng) < 0.0001
+        ) {
+          return prev;
+        }
+        return {
+          coords: emergency.origin,
+          label: 'Active Incident Location',
+          source: 'gps',
+        };
+      });
+
+      // If destination already explicitly chosen, lock it and use it
       if (emergency.destination) {
         const matched = KERALA_HOSPITALS.find(
           (h) =>
@@ -169,25 +385,63 @@ export function CommandCentre({
         }
       }
 
-      // Automatically find the closest hospital from verified dataset
-      const nearest = findNearestHospital(emergency.origin);
-      if (nearest) {
-        setSelectedHospital(nearest.hospital);
-        loadRoute(emergency.origin, nearest.hospital.coords, {
+      // If hospital already active before emergency start, lock to it
+      if (selectedHospital) {
+        loadRoute(emergency.origin, selectedHospital.coords, {
           originLabel: 'Incident Location',
-          destinationLabel: nearest.hospital.name,
+          destinationLabel: selectedHospital.name,
         });
-      } else {
-        setRouteError(
-          'No verified hospital facility could be located near incident coordinates. Please manually select a destination from the directory.',
-        );
+        return;
       }
-    }
-  }, [emergency?.status, emergency?.origin?.lat, emergency?.origin?.lng, loadRoute]);
 
-  // Initial load for default corridor if not already loaded
+      // Automatically find nearest hospital comparing road routes only if no destination was set
+      resolveNearestHospitalForOrigin(emergency.origin, 'Incident Location', true);
+    }
+  }, [emergency?.status, emergency?.origin?.lat, emergency?.origin?.lng, emergency?.destination, loadRoute, resolveNearestHospitalForOrigin, selectedHospital]);
+
+  // Emergency safety recommendation monitor (never silently replace locked destination)
   useEffect(() => {
-    if (selectedCorridor && !selectedHospital && !emergency) {
+    if (!emergency || emergency.status !== 'active' || !selectedHospital) {
+      setCloserRecommendation(null);
+      return;
+    }
+
+    const currentCoords = liveVehicleCoord || emergency.origin;
+    if (!currentCoords || typeof currentCoords.lat !== 'number' || typeof currentCoords.lng !== 'number') {
+      return;
+    }
+
+    // Only re-check recommendation if coordinates have moved significantly (> 250m)
+    if (!hasSignificantLocationChange(lastRecCheckCoordsRef.current, currentCoords, 250)) {
+      return;
+    }
+
+    lastRecCheckCoordsRef.current = currentCoords;
+
+    checkCloserHospitalRecommendation(currentCoords, selectedHospital.id, 1000)
+      .then((rec) => {
+        if (rec && rec.hospital.id !== dismissedRecommendationHospitalId) {
+          setCloserRecommendation(rec);
+        } else {
+          setCloserRecommendation(null);
+        }
+      })
+      .catch((err) => {
+        console.warn('[Recommendation] Error checking closer hospital:', err);
+      });
+  }, [
+    emergency?.status,
+    liveVehicleCoord?.lat,
+    liveVehicleCoord?.lng,
+    emergency?.origin?.lat,
+    emergency?.origin?.lng,
+    selectedHospital?.id,
+    dismissedRecommendationHospitalId,
+  ]);
+
+  // Initial load for default corridor if not already loaded and no hospital chosen
+  useEffect(() => {
+    if (selectedCorridor && !selectedHospital && !emergency && gpsStatus === 'idle') {
       loadRoute(
         selectedCorridor.origin.coords,
         selectedCorridor.destination.coords,
@@ -198,28 +452,31 @@ export function CommandCentre({
         },
       );
     }
-  }, [selectedCorridor, selectedHospital, emergency, loadRoute]);
+  }, [selectedCorridor, selectedHospital, emergency, loadRoute, gpsStatus]);
 
   // Handle hospital selection from Directory
   const handleSelectHospital = (hospital: HospitalDestination) => {
+    setIsManualHospitalSelection(true);
     setSelectedHospital(hospital);
   };
 
   const handleGetHospitalDirections = (hospital: HospitalDestination) => {
+    setIsManualHospitalSelection(true);
     setSelectedHospital(hospital);
-    const originCoords = emergency?.origin || DEMO_COORDS.emergency;
+    const originCoords = emergency?.origin || startingLocation.coords;
     loadRoute(originCoords, hospital.coords, {
-      originLabel: emergency ? 'Incident Location' : 'Thodupuzha Hub',
+      originLabel: emergency ? 'Incident Location' : startingLocation.label,
       destinationLabel: hospital.name,
     }, true);
   };
 
   const handleStartDemoJourney = (hospital: HospitalDestination) => {
+    setIsManualHospitalSelection(true);
     setSelectedHospital(hospital);
     setActiveTab('simulation');
-    const originCoords = emergency?.origin || DEMO_COORDS.emergency;
+    const originCoords = emergency?.origin || startingLocation.coords;
     loadRoute(originCoords, hospital.coords, {
-      originLabel: emergency ? 'Incident Location' : 'Thodupuzha Hub',
+      originLabel: emergency ? 'Incident Location' : startingLocation.label,
       destinationLabel: hospital.name,
     }, true).then(() => {
       setTimeout(() => sim.startSimulation(), 400);
@@ -268,7 +525,7 @@ export function CommandCentre({
   const driverCount = vehicles.filter((v) => v.role === 'driver').length;
 
   function handleStartEmergency() {
-    const originCoords = DEMO_COORDS.emergency;
+    const originCoords = startingLocation.coords;
     let destinationCoords: Coordinates | undefined;
 
     if (selectedHospital) {
@@ -280,20 +537,17 @@ export function CommandCentre({
     onStartEmergency(originCoords, destinationCoords);
   }
 
-  // Compile all 13 verified hospital markers + origin hub for the map
+  // Compile the nearest 3 hospital markers locally (via Haversine) + active destination marker
   const hospitalMarkers = useMemo<HospitalMarkerInfo[]>(() => {
+    const originCoords = startingLocation?.coords || emergency?.origin || DEMO_COORDS.emergency;
     const activeDestinationCoords = selectedHospital?.coords || selectedCorridor?.destination.coords;
 
-    const list: HospitalMarkerInfo[] = [
-      {
-        name: 'District Hospital Thodupuzha (Emergency Hub)',
-        town: 'Thodupuzha',
-        coords: DEMO_COORDS.emergency,
-        isDestination: false,
-      },
-    ];
+    // 1. Calculate nearest 3 hospitals using local Haversine formula (no network/OSRM call)
+    const nearby = getNearestHospitals(originCoords, 3);
+    const list: HospitalMarkerInfo[] = [];
 
-    for (const h of KERALA_HOSPITALS) {
+    nearby.forEach((item, index) => {
+      const h = item.hospital;
       const isDest = Boolean(
         activeDestinationCoords &&
           Math.abs(h.coords.lat - activeDestinationCoords.lat) < 0.0005 &&
@@ -305,6 +559,10 @@ export function CommandCentre({
         town: h.town,
         coords: h.coords,
         isDestination: isDest,
+        distanceKm: item.distanceKm,
+        distanceMetres: item.distanceMetres,
+        rank: index + 1,
+        isNearby: true,
         alternateName: h.alternateName,
         category: h.category,
         address: h.address,
@@ -316,10 +574,61 @@ export function CommandCentre({
           handleGetHospitalDirections(h);
         },
       });
+    });
+
+    // 2. If the active destination is outside the top 3 nearest, keep it visible as destination marker
+    if (activeDestinationCoords) {
+      const isAlreadyInList = list.some((m) => m.isDestination);
+      if (!isAlreadyInList) {
+        const destHospital = selectedHospital || KERALA_HOSPITALS.find(
+          (h) =>
+            Math.abs(h.coords.lat - activeDestinationCoords.lat) < 0.0005 &&
+            Math.abs(h.coords.lng - activeDestinationCoords.lng) < 0.0005,
+        );
+
+        const destName = destHospital?.name || selectedCorridor?.destination.name || 'Selected Destination';
+        const destTown = destHospital?.town || selectedCorridor?.destination.town || '';
+
+        let destDistKm: string | undefined;
+        let destDistMetres: number | undefined;
+        if (
+          originCoords &&
+          typeof originCoords.lat === 'number' &&
+          typeof originCoords.lng === 'number' &&
+          !isNaN(originCoords.lat) &&
+          !isNaN(originCoords.lng)
+        ) {
+          const d = haversineDistance(originCoords, activeDestinationCoords);
+          destDistMetres = d;
+          destDistKm = `${(d / 1000).toFixed(1)} km`;
+        }
+
+        list.push({
+          name: destName,
+          town: destTown,
+          coords: activeDestinationCoords,
+          isDestination: true,
+          distanceKm: destDistKm,
+          distanceMetres: destDistMetres,
+          alternateName: destHospital?.alternateName,
+          category: destHospital?.category,
+          address: destHospital?.address,
+          verifiedOSM: destHospital?.verifiedOSM,
+          onSelectDestination: destHospital ? () => setSelectedHospital(destHospital) : undefined,
+          onGetDirections: destHospital ? () => handleGetHospitalDirections(destHospital) : undefined,
+        });
+      }
     }
 
     return list;
-  }, [selectedHospital, selectedCorridor]);
+  }, [
+    startingLocation?.coords?.lat,
+    startingLocation?.coords?.lng,
+    emergency?.origin?.lat,
+    emergency?.origin?.lng,
+    selectedHospital,
+    selectedCorridor,
+  ]);
 
   const elapsed = emergency?.createdAt
     ? Math.floor((Date.now() - emergency.createdAt) / 1000)
@@ -468,7 +777,7 @@ export function CommandCentre({
         {!isNavigating && activeTab === 'hospitals' && (
           <Card className="animate-fade-in">
             <HospitalDirectory
-              currentOrigin={DEMO_COORDS.emergency}
+              currentOrigin={startingLocation.coords}
               selectedHospitalId={selectedHospital?.id || null}
               onSelectHospital={handleSelectHospital}
               onGetDirections={handleGetHospitalDirections}
@@ -610,7 +919,7 @@ export function CommandCentre({
               <EmergencyMap
                 vehicles={vehicles}
                 emergency={emergency}
-                center={DEMO_COORDS.emergency}
+                center={startingLocation.coords}
                 routeResult={routeResult}
                 onSelectRouteIndex={handleSelectRouteIndex}
                 hospitalMarkers={hospitalMarkers}
@@ -619,6 +928,10 @@ export function CommandCentre({
                 isNavigationActive={isNavigating}
                 traversedRouteCoordinates={isNavigating ? sim.traversedCoordinates : []}
                 remainingRouteCoordinates={isNavigating ? sim.remainingCoordinates : []}
+                startLocationCoord={startingLocation.coords}
+                startLocationLabel={startingLocation.label}
+                isPickingLocation={isPickingOnMap}
+                onMapClick={handleMapClick}
               />
 
               {/* 3. GOOGLE MAPS NAVIGATION MODE OVERLAY */}
@@ -703,6 +1016,19 @@ export function CommandCentre({
           {/* Sidebar (Hidden during active navigation mode) */}
           {!isNavigating && (
             <div className="space-y-5 animate-slide-in-right">
+              {/* Starting Location Options (Phase 2 & 3) */}
+              <StartingLocationSelector
+                currentLocation={startingLocation}
+                isPickingOnMap={isPickingOnMap}
+                onTogglePickingOnMap={() => setIsPickingOnMap((prev) => !prev)}
+                onSelectLocation={handleSelectStartingLocation}
+                onResetToPreset={handleResetToPreset}
+                isSearchingHospitals={isSearchingHospitals}
+                gpsStatus={gpsStatus}
+                gpsErrorMessage={gpsErrorMessage}
+                onRefreshGPS={() => acquireLiveGPS()}
+              />
+
               {/* Emergency controls */}
               <Card>
                 <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
@@ -719,18 +1045,44 @@ export function CommandCentre({
                           <Building2 className="w-3 h-3" />
                           Target Facility
                         </span>
-                        {currentActiveRoute && (
-                          <span className="text-[10px] bg-accent-teal/15 text-accent-teal px-1.5 py-0.5 rounded font-mono font-bold">
-                            {currentActiveRoute.distanceKm}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {isManualHospitalSelection && (
+                            <span className="text-[9px] bg-sky-500/15 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded font-bold uppercase">
+                              Manual Pick
+                            </span>
+                          )}
+                          {currentActiveRoute && (
+                            <span className="text-[10px] bg-accent-teal/15 text-accent-teal px-1.5 py-0.5 rounded font-mono font-bold">
+                              {currentActiveRoute.distanceKm}
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <div className="font-semibold text-sm text-primary-text">
                         {activeDestinationName}
                       </div>
-                      <div className="text-xs text-muted-text">
-                        Route geometry via OpenStreetMap OSRM
+                      <div className="flex items-center justify-between text-xs text-muted-text">
+                        <span>
+                          {routeResult?.disclaimer ? (
+                            <span className="text-alert-amber font-semibold flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                              Straight-line Fallback
+                            </span>
+                          ) : (
+                            'Route geometry via OpenStreetMap OSRM'
+                          )}
+                        </span>
+                        {currentActiveRoute?.durationMinutes && (
+                          <span className="font-mono text-emerald-400 font-semibold">
+                            ~{currentActiveRoute.durationMinutes}
+                          </span>
+                        )}
                       </div>
+                      {routeResult?.disclaimer && (
+                        <div className="text-[10px] text-alert-amber/90 bg-alert-amber/10 border border-alert-amber/25 rounded p-1.5 leading-tight">
+                          {routeResult.disclaimer}
+                        </div>
+                      )}
                     </div>
 
                     {/* Route Error & Manual Selector prompt */}
@@ -841,6 +1193,52 @@ export function CommandCentre({
                         </div>
                       </div>
                     </div>
+
+                    {/* Closer Hospital Recommendation Banner (Safety: requires explicit operator confirmation) */}
+                    {closerRecommendation && (
+                      <div className="bg-sky-950/40 border border-sky-400/40 rounded-xl p-3.5 text-xs space-y-2.5 animate-fade-in shadow-lg shadow-sky-950/30">
+                        <div className="flex items-center gap-1.5 font-bold text-sky-400">
+                          <Compass className="w-4 h-4 text-sky-300 animate-spin" />
+                          <span>Closer Hospital Recommended</span>
+                        </div>
+                        <p className="text-primary-text leading-relaxed">
+                          <strong>{closerRecommendation.hospital.name}</strong> is{' '}
+                          <span className="text-emerald-400 font-bold">{closerRecommendation.savingsKm} closer</span>{' '}
+                          (~{closerRecommendation.roadDurationMinutes} est. travel time).
+                        </p>
+                        <p className="text-[11px] text-muted-text">
+                          Current locked destination is <strong>{selectedHospital?.name || activeDestinationName}</strong>.
+                          Switching destinations mid-incident requires explicit operator confirmation.
+                        </p>
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedHospital(closerRecommendation.hospital);
+                              const curOrigin = liveVehicleCoord || startingLocation.coords;
+                              loadRoute(curOrigin, closerRecommendation.hospital.coords, {
+                                originLabel: 'Emergency Vehicle Location',
+                                destinationLabel: closerRecommendation.hospital.name,
+                              }, true);
+                              setCloserRecommendation(null);
+                            }}
+                            className="flex-1 py-1.5 px-2 bg-emerald-500 text-midnight font-bold rounded-lg hover:bg-emerald-400 transition-colors text-center text-xs shadow-md shadow-emerald-500/20"
+                          >
+                            Switch Destination
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDismissedRecommendationHospitalId(closerRecommendation.hospital.id);
+                              setCloserRecommendation(null);
+                            }}
+                            className="py-1.5 px-2.5 bg-petrol/60 hover:bg-petrol text-muted-text hover:text-primary-text font-semibold rounded-lg transition-colors text-xs border border-petrol"
+                          >
+                            Keep Current
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Start Navigation in Emergency Mode */}
                     {currentActiveRoute && (

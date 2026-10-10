@@ -113,3 +113,55 @@ export const DEMO_COORDS = {
   vehicleC:  { lat: 9.9050, lng: 76.7260 }, // ~1310m north-east (outside 1km radius -> no alert)
 } as const;
 
+
+// ─── Officer & Corridor Clearance Types for Car Dashboard ───
+export type JunctionClearanceStatus = 'PENDING' | 'ASSIGNED' | 'CLEARING' | 'CLEARED';
+
+export interface JunctionTask {
+  id: string;
+  tripId: string;
+  name: string;
+  landmark?: string;
+  location: Coordinates;
+  sequenceOrder: number;
+  status: JunctionClearanceStatus;
+  assignedOfficerId?: string;
+  assignedOfficerName?: string;
+  assignedOfficerStation?: string;
+  distanceFromAmbulanceMetres?: number;
+  etaSeconds?: number;
+  notes?: string;
+  lastUpdatedAt: number;
+}
+
+export type TripPriority = 'CRITICAL' | 'URGENT' | 'ROUTINE';
+export type TripStatus = 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+
+export interface EmergencyTrip {
+  tripId: string;
+  vehicleId: string;
+  priority: TripPriority;
+  patientCondition: string;
+  origin: Coordinates;
+  originName: string;
+  destination: Coordinates;
+  destinationName: string;
+  currentLocation: Coordinates;
+  routeCoordinates: [number, number][];
+  totalDistanceKm: string;
+  etaMinutes: number;
+  status: TripStatus;
+  startedAt: number;
+  updatedAt: number;
+  junctions: JunctionTask[];
+  isSimulated: boolean;
+}
+
+export interface BackendConnectionStatus {
+  coreConnected: boolean;
+  coreUrl: string;
+  officerConnected: boolean;
+  officerUrl: string;
+  lastCorePing: number;
+  lastOfficerPing: number;
+}
